@@ -158,7 +158,8 @@ it through LAW.md (rules) or JOB.md (role), not by editing SOUL.md directly.
 | `phyl-model-claude` | Model adapter for Claude CLI. | Rust (or shell) |
 | `phyl-tool-bash` | Tool: execute shell commands. | Rust (or shell) |
 | `phyl-tool-files` | Tool: read/write/search files. | Rust (or shell) |
-| `phyl-tool-mcp` | Tool: bridge to any MCP server. | Rust |
+| `phyl-tool-session` | Tool (server mode): ask_human + done. | Rust |
+| `phyl-tool-mcp` | Tool (server mode): bridge to any MCP server. | Rust |
 | `phyl-bridge-signal` | Bridge: two-way Signal Messenger interface. | Rust |
 
 Each tool and model adapter is a standalone executable. They can be written in
@@ -222,9 +223,11 @@ jq -r '.messages[-1].content' | jq -R '{content: ., tool_calls: []}'
 
 ### Tool Protocol
 
-A tool is an executable. It supports two modes:
+A tool is an executable. It supports up to three modes.
 
 **Discovery** (`--spec`):
+
+Every tool must support this. Print tool schema(s) to stdout and exit.
 
 ```sh
 $ phyl-tool-bash --spec
@@ -252,7 +255,10 @@ $ phyl-tool-files --spec
 ]
 ```
 
-**Invocation** (stdin/stdout):
+**One-shot mode** (default, stdin/stdout):
+
+Read one tool call from stdin, write one result to stdout, exit. Good for
+simple, stateless tools like `bash` or `read_file`.
 
 ```sh
 $ echo '{"name":"bash","arguments":{"command":"ls"}}' | phyl-tool-bash
@@ -265,6 +271,61 @@ On error:
 $ echo '{"name":"bash","arguments":{"command":"false"}}' | phyl-tool-bash
 {"error": "Command exited with status 1"}
 ```
+
+**Server mode** (`--serve`):
+
+For tools that are long-lived, stateful, or need to block for extended
+periods. The tool starts, stays running for the life of the session, and
+handles multiple calls over newline-delimited JSON (NDJSON) on stdin/stdout.
+
+```sh
+$ phyl-tool-mcp --serve
+# Now send calls, one JSON object per line:
+{"id":"1","name":"brave_search","arguments":{"query":"rust async"}}
+# Tool responds with one JSON object per line:
+{"id":"1","output":"...results..."}
+# Send another:
+{"id":"2","name":"brave_search","arguments":{"query":"tokio tutorial"}}
+{"id":"2","output":"...results..."}
+# Session ends → stdin closes → tool exits
+```
+
+The `id` field ties requests to responses, allowing the session runner to
+dispatch calls and match results. The tool can take as long as it needs to
+respond — this is how `ask_human` blocks for minutes waiting for a human.
+
+**How the session runner decides which mode to use:**
+
+1. At session start, discover tools: `phyl-tool-X --spec`
+2. Try to start each tool in server mode: `phyl-tool-X --serve`
+3. If it exits immediately (doesn't support `--serve`), mark it as one-shot
+4. If it stays running, keep the handle and route calls to it via NDJSON
+5. At session end, close stdin on all server-mode tools → they exit
+
+This is one unified protocol. Simple tools ignore `--serve` (or print an error
+and exit) and get invoked per-call. Complex tools implement `--serve` and stay
+alive. The session runner handles both transparently.
+
+**Which tools use which mode:**
+
+| Tool | Mode | Why |
+|------|------|-----|
+| `phyl-tool-bash` | One-shot | Stateless. Each command is independent. |
+| `phyl-tool-files` | One-shot | Stateless. Read/write/search. |
+| `phyl-tool-mcp` | Server | MCP servers are long-lived processes. |
+| `phyl-tool-session` | Server | Handles `ask_human` (blocks) and `done` (signals session end). |
+
+**`phyl-tool-session`** is the tool that handles session-specific operations
+that need access to the session's log and FIFO:
+
+- `ask_human`: writes a question to `log.jsonl`, blocks waiting for an answer
+  on the FIFO, returns the answer. Can block for minutes.
+- `done`: writes a done event to `log.jsonl`, returns a signal that the session
+  runner reads as "end the session."
+
+It runs in server mode because `ask_human` needs to block without timing out
+the way a one-shot process would. It knows where the session log and FIFO are
+from environment variables.
 
 Tools receive environment variables for context:
 
@@ -537,7 +598,10 @@ phylactery/
 │   ├── phyl-tool-files/        # File read/write/search tool
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs
-│   ├── phyl-tool-mcp/          # MCP bridge tool
+│   ├── phyl-tool-session/     # Session tools: ask_human, done (server mode)
+│   │   ├── Cargo.toml
+│   │   └── src/main.rs
+│   ├── phyl-tool-mcp/          # MCP bridge tool (server mode)
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs
 │   └── phyl-bridge-signal/     # Signal Messenger bridge
@@ -687,10 +751,12 @@ The agentic loop, testable without a daemon.
       - Parse args (session dir, prompt)
       - Discover tools from path
       - Build system prompt from LAW.md + JOB.md + SOUL.md + knowledge/INDEX.md
-      - Run the agentic loop (with built-in ask_human and done handlers)
+      - Start server-mode tools (phyl-tool-session, phyl-tool-mcp)
+      - Run the agentic loop: dispatch to one-shot or server-mode tools
       - Write to log.jsonl
       - Finalization step: SOUL.md reflection + done
       - PID file for daemon crash recovery
+      - On exit: close stdin on server-mode tools → they shut down
 - [ ] Create FIFO, read events from it
 - [ ] Test: `mkdir -p sessions/test && phyl-run --session-dir sessions/test --prompt "what is 2+2"`
 
@@ -736,11 +802,12 @@ The agentic loop, testable without a daemon.
 
 ### Phase 9: Human Attention System
 
-- [ ] Implement `ask_human` as built-in handler in session runner:
-      - Write question event to log.jsonl with unique ID
-      - Block on FIFO waiting for answer event
-      - Return answer to model as tool result
-      - Handle timeout (configurable, default 30 min)
+- [ ] Implement `phyl-tool-session` (server mode tool):
+      - `--spec`: return schemas for `ask_human` and `done`
+      - `--serve`: run NDJSON server loop
+      - `ask_human` handler: write question event to log.jsonl, block on FIFO
+        for answer, return answer to model (timeout: configurable, default 30 min)
+      - `done` handler: write done event to log.jsonl, signal session end
 - [ ] Add `GET /feed` SSE endpoint to daemon:
       - Tail all active session logs
       - Filter for attention-worthy events (question, done, error)
@@ -868,34 +935,21 @@ For truly conflicting edits to the same knowledge file, the later session
 should detect the conflict and ask the model to re-do its edit against the
 updated file.
 
-### The ask_human Protocol Problem
+### The ask_human / Long-Lived Tool Problem
 
-`ask_human` doesn't fit the simple tool protocol because it needs to:
+`ask_human` doesn't fit the one-shot tool model because it needs to block for
+minutes and interact with the session's log and FIFO. MCP has a similar
+problem — MCP servers are stateful long-lived processes.
 
-1. Write to the session log (not just stdout)
-2. Block for a long time waiting for human input
-3. Read from the session's event stream
+**Decision: Unified server mode protocol.** Rather than special-casing
+individual tools in the session runner, the tool protocol itself supports two
+modes: one-shot (spawn, call, exit) and server (stay alive, handle multiple
+NDJSON calls). See the Tool Protocol section above.
 
-**Decision: Make ask_human a special case in the session runner, not a
-separate binary.** When the session runner sees a tool call named `ask_human`,
-it handles it directly rather than dispatching to an external process:
-
-1. Writes a `question` event to `log.jsonl`
-2. Waits on the FIFO for an `answer` event
-3. Returns the answer as the tool result
-
-This is the one exception to "tools are external processes." The alternative
-(having the tool binary communicate back to the session runner via side
-channels) is more complex and gains nothing. `done` works the same way — it's
-a signal to the session runner, not an external binary.
-
-Revised tool split:
-
-| Handled by session runner (built-in) | External binaries |
-|---------------------------------------|-------------------|
-| `ask_human` | `phyl-tool-bash` |
-| `done` | `phyl-tool-files` |
-| | `phyl-tool-mcp` |
+`ask_human` and `done` live in `phyl-tool-session`, which runs in server mode.
+MCP tools live in `phyl-tool-mcp`, which also runs in server mode. Simple tools
+like `bash` and `files` remain one-shot. The session runner handles both modes
+transparently — no special cases.
 
 ### Session Directory Lifecycle
 
@@ -913,39 +967,12 @@ periodically. Session logs can be archived before deletion (e.g., moved to
 
 ### MCP Server Lifecycle
 
-MCP servers are long-lived processes. The spawn-per-invocation tool model
-doesn't fit.
+MCP servers are long-lived stateful processes.
 
-**Decision: `phyl-tool-mcp` is a long-running sidecar, not a per-invocation
-tool.** It starts at session begin and stops at session end. The session runner
-starts it alongside the session and communicates with it via its stdin/stdout.
-
-Alternative considered: have the daemon manage MCP servers globally. Rejected
-because it couples the daemon to MCP knowledge, and different sessions might
-need different MCP servers.
-
-For the tool protocol, `phyl-tool-mcp` still responds to `--spec` like any
-other tool (starts MCP servers, collects schemas, prints them, exits). But on
-invocation, instead of spawning fresh, the session runner keeps a handle to a
-running `phyl-tool-mcp` process and pipes tool calls to it. This is a second
-exception to the "each tool invocation is a fresh process" rule.
-
-Invocation protocol for long-running tools:
-
-```sh
-# Start once:
-phyl-tool-mcp --server < pipe_in > pipe_out
-
-# Send calls (newline-delimited JSON):
-echo '{"name":"brave_search","arguments":{"query":"..."}}' > pipe_in
-
-# Read results (newline-delimited JSON):
-read result < pipe_out
-```
-
-Tools that support `--server` mode run as long-lived processes. Tools that
-don't are invoked per-call as before. The session runner checks for `--server`
-support and uses the appropriate mode.
+**Decision: Solved by the unified server mode protocol.** `phyl-tool-mcp` runs
+in `--serve` mode for the life of the session. It manages MCP server child
+processes internally — starting them on first use and stopping them when stdin
+closes. See the Tool Protocol section for the NDJSON server mode contract.
 
 ### FIFO Handling
 
