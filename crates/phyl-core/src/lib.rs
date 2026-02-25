@@ -302,6 +302,18 @@ impl Default for GitConfig {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            daemon: DaemonConfig::default(),
+            session: SessionConfig::default(),
+            model: ModelConfig::default(),
+            git: GitConfig::default(),
+            mcp: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
