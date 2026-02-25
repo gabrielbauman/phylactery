@@ -16,7 +16,7 @@ No linter or formatter is configured yet. Use `cargo clippy` and `cargo fmt` if 
 
 ## What This Project Is
 
-A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the full architecture. Read `PROGRESS.md` for what's implemented.
+A personal AI agent built as cooperating Unix processes. See `docs/` for detailed documentation of each component.
 
 **Two-repo model:** This repo builds the binaries. The agent's runtime state lives in a separate git repo at `$PHYLACTERY_HOME` (default `~/.local/share/phylactery`; legacy `~/.phylactery` also supported), created by `phyl init`.
 
