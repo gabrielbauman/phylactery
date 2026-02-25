@@ -239,11 +239,7 @@ fn cmd_install_services_launchd() -> anyhow::Result<()> {
             &secrets,
             true,
         );
-        write_file_to(
-            &agents_dir,
-            "com.phylactery.bridge-signal.plist",
-            &plist,
-        )?;
+        write_file_to(&agents_dir, "com.phylactery.bridge-signal.plist", &plist)?;
         eprintln!("  wrote com.phylactery.bridge-signal.plist");
     }
 
@@ -272,9 +268,8 @@ fn generate_launchd_plist(
     secrets: &[(String, String)],
     keep_alive: bool,
 ) -> String {
-    let mut env_entries = format!(
-        "      <key>PHYLACTERY_HOME</key>\n      <string>{home}</string>"
-    );
+    let mut env_entries =
+        format!("      <key>PHYLACTERY_HOME</key>\n      <string>{home}</string>");
     for (key, value) in secrets {
         env_entries.push_str(&format!(
             "\n      <key>{key}</key>\n      <string>{value}</string>"
