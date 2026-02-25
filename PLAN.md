@@ -1618,7 +1618,7 @@ A generic mechanism for "poll a command, and if the output changed, start a
 session with the diff and an action prompt." This turns any command-line tool
 into an event source for the agent.
 
-- [ ] Implement `phyl-poll`:
+- [x] Implement `phyl-poll`:
       - Standalone binary, similar to bridges. Runs as a long-lived process
         alongside the daemon.
       - Read `[[poll]]` configs from `$PHYLACTERY_HOME/config.toml`
@@ -1634,18 +1634,18 @@ into an event source for the agent.
       - Stagger initial poll execution to avoid thundering herd on startup
       - Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`)
       - Log poll activity to stderr (same convention as other binaries)
-- [ ] Config types: `PollConfig` with `name`, `command`, `args`, `interval`,
+- [x] Config types: `PollConfig` with `name`, `command`, `args`, `interval`,
       `prompt`, optional `env` and `shell` (default: run command directly;
       `shell = true` runs via `sh -c`)
-- [ ] State directory: `$PHYLACTERY_HOME/poll/` (gitignored, created on
+- [x] State directory: `$PHYLACTERY_HOME/poll/` (gitignored, created on
       first run)
-- [ ] Prompt assembly: the session prompt includes the rule's `prompt`
+- [x] Prompt assembly: the session prompt includes the rule's `prompt`
       template, the previous output, the new output, and a unified diff.
       The model gets full context to decide what to do.
-- [ ] Add `phyl-poll` to workspace `Cargo.toml`
-- [ ] Unit tests: config parsing, diff generation, prompt assembly, state
+- [x] Add `phyl-poll` to workspace `Cargo.toml`
+- [x] Unit tests: config parsing, diff generation, prompt assembly, state
       file read/write, interval scheduling
-- [ ] Test: configure a poll rule, verify session creation on change
+- [x] Test: configure a poll rule, verify session creation on change
 
 ### Phase 12: Incoming Event Listener
 
@@ -1656,7 +1656,7 @@ and file watching (inotify on local directories). All create sessions via
 
 **12a: Webhooks**
 
-- [ ] Implement webhook listener in `phyl-listen`:
+- [x] Implement webhook listener in `phyl-listen`:
       - Read `[listen]` and `[[listen.hook]]` configs from
         `$PHYLACTERY_HOME/config.toml`
       - Bind HTTP server to `listen.bind` address (default
@@ -1676,30 +1676,30 @@ and file watching (inotify on local directories). All create sessions via
         - Return 202 Accepted with session ID
       - Return 404 for unconfigured paths, 401 for bad signatures, 429 for
         rate limit exceeded
-- [ ] Config types: `ListenHookConfig` with `name`, `path`, `prompt`,
+- [x] Config types: `ListenHookConfig` with `name`, `path`, `prompt`,
       optional `secret`, `filter_header`, `filter_values`, `rate_limit`,
       `dedup_header`, `max_body_size`, `route_header`,
       `routes` (HashMap<String, String>)
-- [ ] Webhook secret verification: HMAC-SHA256 against
+- [x] Webhook secret verification: HMAC-SHA256 against
       `X-Hub-Signature-256` (GitHub-style), with configurable header name
       for other providers. Environment variable expansion in `secret` field.
-- [ ] Webhook prompt assembly: hook's prompt + source info (hook name,
+- [x] Webhook prompt assembly: hook's prompt + source info (hook name,
       path, timestamp) + relevant headers + full request body
-- [ ] Webhook deduplication: in-memory cache of delivery IDs (from
+- [x] Webhook deduplication: in-memory cache of delivery IDs (from
       configurable header, default `X-Request-Id`). 5-minute TTL.
-- [ ] Payload size limit: 1 MB default, configurable per hook
-- [ ] Event-type routing: resolve prompt from `route_header` + `routes`
+- [x] Payload size limit: 1 MB default, configurable per hook
+- [x] Event-type routing: resolve prompt from `route_header` + `routes`
       map when present, fall back to `prompt` for unmatched header values.
       Multiple hooks on same path matched in config order.
-- [ ] Unit tests: config parsing, HMAC verification, rate limiting,
+- [x] Unit tests: config parsing, HMAC verification, rate limiting,
       deduplication, prompt assembly, route matching, header filtering,
       event-type prompt resolution (routes map + fallback)
-- [ ] Test: configure a webhook hook, POST to it, verify session creation
-- [ ] Test: configure event-type routes, verify different prompts per event
+- [x] Test: configure a webhook hook, POST to it, verify session creation
+- [x] Test: configure event-type routes, verify different prompts per event
 
 **12b: SSE Subscription**
 
-- [ ] Implement SSE subscription listener in `phyl-listen`:
+- [x] Implement SSE subscription listener in `phyl-listen`:
       - Read `[[listen.sse]]` configs from `$PHYLACTERY_HOME/config.toml`
       - For each SSE source, spawn a tokio task that connects to the URL
         and parses the `text/event-stream` format
@@ -1716,21 +1716,21 @@ and file watching (inotify on local directories). All create sessions via
         60s max). Send `Last-Event-ID` header on reconnect.
       - Stale connection detection: recycle if no events or keep-alive
         comments for 5 minutes
-- [ ] Config types: `ListenSseConfig` with `name`, `url`, `prompt`,
+- [x] Config types: `ListenSseConfig` with `name`, `url`, `prompt`,
       optional `headers` (HashMap<String, String> with env var expansion),
       `events` (Vec<String>), `route_event` (bool), `routes`
       (HashMap<String, String>), `rate_limit`
-- [ ] SSE prompt assembly: resolved prompt + source info (name, URL,
+- [x] SSE prompt assembly: resolved prompt + source info (name, URL,
       event type, event ID, timestamp) + event data
-- [ ] SSE reconnection: exponential backoff, `Last-Event-ID` header,
+- [x] SSE reconnection: exponential backoff, `Last-Event-ID` header,
       respect server `retry:` field
-- [ ] Unit tests: SSE frame parsing (event, data, id, multi-line data,
+- [x] Unit tests: SSE frame parsing (event, data, id, multi-line data,
       comments), event-type routing, reconnection logic, config parsing
-- [ ] Test: connect to an SSE endpoint, verify session creation on event
+- [x] Test: connect to an SSE endpoint, verify session creation on event
 
 **12c: File Watching**
 
-- [ ] Implement file watch listener in `phyl-listen`:
+- [x] Implement file watch listener in `phyl-listen`:
       - Read `[[listen.watch]]` configs from `$PHYLACTERY_HOME/config.toml`
       - Set up inotify watches for each configured `path` (directory or file)
       - If `recursive` is true, watch all subdirectories and add watches
@@ -1749,40 +1749,40 @@ and file watching (inotify on local directories). All create sessions via
       - Skip hidden files/directories (starting with `.`) unless glob
         explicitly matches
       - If watched path doesn't exist, log warning and retry every 30s
-- [ ] Config types: `ListenWatchConfig` with `name`, `path`, `prompt`,
+- [x] Config types: `ListenWatchConfig` with `name`, `path`, `prompt`,
       `recursive` (bool, default false), `events` (Vec<String>),
       optional `glob`, `debounce` (seconds, default 2, min 0, max 60),
       `rate_limit`
-- [ ] File watch prompt assembly: watch's prompt + file event info (path,
+- [x] File watch prompt assembly: watch's prompt + file event info (path,
       event type, timestamp, size) + file content (for small files on
       create/modify events)
-- [ ] Debouncing: per-file-path timer, coalesce rapid events (editors
+- [x] Debouncing: per-file-path timer, coalesce rapid events (editors
       generate multiple events per save). Final event type wins (create
       then modify → modify; create then delete → no session).
-- [ ] Platform support: inotify on Linux (via `inotify` crate), fall back
+- [x] Platform support: inotify on Linux (via `inotify` crate), fall back
       to stat-based polling (1-second interval) on other platforms or if
       inotify watch limit is exhausted
-- [ ] Unit tests: event filtering, glob matching, debounce coalescing,
+- [x] Unit tests: event filtering, glob matching, debounce coalescing,
       prompt assembly with/without file content, config parsing
-- [ ] Test: watch a directory, create a file, verify session creation
+- [x] Test: watch a directory, create a file, verify session creation
 
 **Shared infrastructure (all listener types)**
 
-- [ ] Add `phyl-listen` to workspace `Cargo.toml`
-- [ ] `ListenConfig` with `bind` (optional — only for webhooks),
+- [x] Add `phyl-listen` to workspace `Cargo.toml`
+- [x] `ListenConfig` with `bind` (optional — only for webhooks),
       `hook` (Vec), `sse` (Vec), `watch` (Vec)
-- [ ] Shared rate limiting: in-memory sliding window, configurable per
+- [x] Shared rate limiting: in-memory sliding window, configurable per
       source. Default 10 sessions/minute. Returns 429 (webhooks) or
       drops event with log warning (SSE/watch).
-- [ ] Shared daemon client: Unix socket HTTP client for POST /sessions,
+- [x] Shared daemon client: Unix socket HTTP client for POST /sessions,
       same pattern as `phyl` CLI client module
-- [ ] Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`) — close
+- [x] Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`) — close
       HTTP server, disconnect SSE streams, remove inotify watches
-- [ ] HTTP server only started if `[[listen.hook]]` sections exist; SSE
+- [x] HTTP server only started if `[[listen.hook]]` sections exist; SSE
       and watch listeners run independently of whether the HTTP server
       is active
-- [ ] Log activity to stderr (same convention as other binaries)
-- [ ] Integration test: run all three listener types simultaneously
+- [x] Log activity to stderr (same convention as other binaries)
+- [x] Integration test: run all three listener types simultaneously
 
 ### Phase 13: Setup, Configuration, and Service Management
 
@@ -2005,47 +2005,47 @@ Refuses to run if services are active unless `--force` is passed.
 
 **Implementation checklist:**
 
-- [ ] Secrets file infrastructure:
+- [x] Secrets file infrastructure:
       - `phyl init` creates `secrets.env` (empty, `chmod 600`)
       - Add `secrets.env` to `.gitignore` template
       - `phylactd` loads `secrets.env` on startup, exports to child env
       - `phyl-poll` and `phyl-listen` also load `secrets.env` directly
         (they are independent processes, not daemon children)
-- [ ] `phyl config add-secret`, `list-secrets`, `remove-secret`:
+- [x] `phyl config add-secret`, `list-secrets`, `remove-secret`:
       parse and modify `secrets.env`
-- [ ] `phyl config show`: read config.toml, resolve `$VAR` references
+- [x] `phyl config show`: read config.toml, resolve `$VAR` references
       from environment + secrets.env, pretty-print with masked secrets
-- [ ] `phyl config validate`: parse config.toml, check for missing
+- [x] `phyl config validate`: parse config.toml, check for missing
       required fields, validate command paths exist, warn on
       unreferenced secrets and missing secret references
-- [ ] `phyl config edit`: exec `$EDITOR` on `$PHYLACTERY_HOME/config.toml`,
+- [x] `phyl config edit`: exec `$EDITOR` on `$PHYLACTERY_HOME/config.toml`,
       run validation after editor exits
-- [ ] `phyl config add mcp|poll|hook|sse|watch|bridge`: interactive
+- [x] `phyl config add mcp|poll|hook|sse|watch|bridge`: interactive
       prompts (TTY) or flag-driven, append to config.toml, validate
-- [ ] `phyl setup systemd`:
+- [x] `phyl setup systemd`:
       - Generate unit files from config (only for configured services)
       - Resolve `$PHYLACTERY_HOME` to absolute path in unit files
       - Install to `~/.config/systemd/user/`
       - `systemctl --user daemon-reload && enable && start`
       - Idempotent: regenerate and restart on re-run
-- [ ] `phyl setup status`:
+- [x] `phyl setup status`:
       - Check daemon reachability (socket exists, GET /health)
       - Check systemd unit status or PID files
       - Parse config for service inventory
       - Show session summary from daemon API
-- [ ] `phyl start --all`:
+- [x] `phyl start --all`:
       - Fork daemon, wait for socket, fork poller/listener/bridges
       - Forward SIGTERM to all children on Ctrl-C
       - Only start services that have configuration
-- [ ] Update `phyl init`:
+- [x] Update `phyl init`:
       - Default to `~/.local/share/phylactery`
       - Create `secrets.env` and `.config/phylactery/` symlink
       - `--systemd` flag for combined init + service install
       - Print next-steps guidance after init
-- [ ] `phyl setup migrate-xdg`:
+- [x] `phyl setup migrate-xdg`:
       - Stop services, move directory, create symlinks, update units
       - Refuse if services running without `--force`
-- [ ] Unit tests: config validation rules, secrets file parsing,
+- [x] Unit tests: config validation rules, secrets file parsing,
       systemd unit generation, XDG path resolution, config add
       serialization
 

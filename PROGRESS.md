@@ -280,3 +280,182 @@ Tracking implementation status against the [plan](PLAN.md).
       (normal, no message, empty message, null envelope), pending
       question state management (tracking, FIFO order, cap at 50),
       config deserialization (full, defaults, missing bridge)
+
+## Phase 11: Polling — **Complete**
+
+- [x] Implement `phyl-poll`:
+      - Standalone long-lived binary, runs alongside daemon
+      - Read `[[poll]]` configs from `$PHYLACTERY_HOME/config.toml`
+      - Load `secrets.env` on startup (env var expansion for config values)
+      - For each poll rule, spawn tokio task with configured interval
+      - Run configured command (direct or `shell = true` via `sh -c`)
+      - Capture stdout, compare to previous output stored in
+        `$PHYLACTERY_HOME/poll/<name>.last`
+      - On first run: establish baseline (store output, no session)
+      - On change: assemble prompt with previous/current output + diff,
+        POST /sessions to daemon via Unix socket
+      - On no change: sleep until next interval
+      - Staggered initial execution (100ms per rule) to avoid thundering herd
+      - Command timeout enforcement (configurable, default 30s)
+      - Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`)
+- [x] Config types in `phyl-core`: `PollConfig` with `name`, `command`,
+      `args`, `interval` (default 300s), `prompt`, `env` (HashMap),
+      `shell` (bool), `timeout` (default 30s)
+- [x] State directory: `$PHYLACTERY_HOME/poll/` (gitignored, created
+      on first run)
+- [x] Prompt assembly: rule's `prompt` + previous output + current
+      output + simple line-by-line diff
+- [x] Daemon client: hyper HTTP/1.1 over Unix socket (same pattern as
+      CLI client)
+- [x] Unit tests (14 tests): diff generation (identical, changes,
+      additions, deletions), prompt assembly, env var expansion
+      ($VAR and ${VAR} syntax, missing vars, mixed), config
+      deserialization (full, defaults, shell mode, with env/timeout),
+      secrets.env loading
+- [x] Added to workspace `Cargo.toml`
+
+## Phase 12: Incoming Event Listener — **Complete**
+
+### Phase 12a: Webhooks
+
+- [x] Implement webhook listener in `phyl-listen`:
+      - HTTP server using axum + tokio on configurable bind address
+        (default `127.0.0.1:7890`)
+      - Route incoming POSTs to configured hooks by path matching
+      - HMAC-SHA256 signature verification (`X-Hub-Signature-256`
+        for GitHub, `X-Gitlab-Token` for GitLab)
+      - Event-type routing: resolve prompt from `route_header` +
+        `routes` map, fall back to `prompt` field
+      - Header-based filtering: `filter_header` + `filter_values`
+        for matching (first match wins among hooks on same path)
+      - Rate limiting: sliding window, default 10/minute per hook
+      - Deduplication: 5-minute in-memory cache by delivery ID header
+        (default `X-Request-Id`)
+      - Payload size limit: default 1 MB per hook
+      - Returns 202/404/401/429 as appropriate
+      - Prompt assembly: hook prompt + source info + headers + payload
+- [x] Config types in `phyl-core`: `ListenHookConfig` with `name`,
+      `path`, `prompt`, `secret`, `filter_header`, `filter_values`,
+      `rate_limit`, `dedup_header`, `max_body_size`, `route_header`,
+      `routes` (HashMap)
+- [x] Unit tests: HMAC verification (GitHub valid/invalid, GitLab
+      valid/invalid, no header), prompt resolution (with route,
+      fallback, no route header), config deserialization
+
+### Phase 12b: SSE Subscription
+
+- [x] Implement SSE subscription listener in `phyl-listen`:
+      - For each `[[listen.sse]]` config, spawn persistent connection
+      - SSE frame parsing: `event:`, `data:` (multi-line), `id:`,
+        comments (`:` prefix for keep-alive)
+      - Event-type filtering (`events` list) and routing
+        (`route_event` + `routes` map)
+      - Automatic reconnection with exponential backoff (5s → 60s max)
+      - `Last-Event-ID` header on reconnect
+      - Stale connection detection (5-minute no-activity timeout)
+      - Rate limiting and deduplication per source
+      - Custom headers with env var expansion
+      - Prompt assembly: resolved prompt + source info + event data
+- [x] Config types in `phyl-core`: `ListenSseConfig` with `name`,
+      `url`, `prompt`, `headers` (HashMap with env expansion),
+      `events`, `route_event`, `routes`, `rate_limit`
+- [x] Unit tests: config deserialization (full, defaults)
+
+### Phase 12c: File Watching
+
+- [x] Implement file watch listener in `phyl-listen`:
+      - inotify-based file system monitoring
+      - Watch configured paths for create/modify/delete/move events
+      - Recursive directory watching (optional, with auto-add for
+        new subdirectories)
+      - Event type filtering against configured `events` list
+      - Glob-based filename filtering
+      - Per-file debouncing (configurable window, default 2s)
+      - Include file content for small files (<100KB) on create/modify
+      - Skip hidden files/directories unless glob explicitly matches
+      - Rate limiting per watch source
+      - Prompt assembly: watch prompt + file event info + file content
+- [x] Config types in `phyl-core`: `ListenWatchConfig` with `name`,
+      `path`, `prompt`, `recursive`, `events`, `glob`, `debounce`,
+      `rate_limit`
+- [x] Unit tests: glob matching, watch mask building, event type
+      mapping, prompt assembly, config deserialization (full, defaults)
+
+### Shared Infrastructure
+
+- [x] `ListenConfig` in `phyl-core` with `bind`, `hook` (Vec),
+      `sse` (Vec), `watch` (Vec)
+- [x] Shared rate limiting module: in-memory sliding window per source,
+      configurable max per minute
+- [x] Shared deduplication cache: in-memory with 5-minute TTL
+- [x] Shared daemon client: Unix socket HTTP POST /sessions
+- [x] Graceful shutdown on Ctrl-C
+- [x] Unit tests: rate limiter (under/over limit, independent sources),
+      dedup cache (duplicate/different IDs)
+- [x] Added to workspace `Cargo.toml`
+
+## Phase 13: Setup, Configuration, and Service Management — **Complete**
+
+### Secrets File Infrastructure
+
+- [x] `phyl init` creates `secrets.env` (empty, `chmod 600`)
+- [x] Added `secrets.env` to `.gitignore` template (root `.gitignore`)
+- [x] `phyl-poll` and `phyl-listen` load `secrets.env` on startup
+
+### Configuration Subcommands
+
+- [x] `phyl config show`: read config.toml, pretty-print with
+      secret values masked (first 3 chars + bullets)
+- [x] `phyl config validate`: parse config.toml, check model adapter
+      path, poll command paths, duplicate names, secret references
+      ($VAR) against secrets.env and environment
+- [x] `phyl config edit`: exec `$EDITOR` on config.toml, run
+      validation after editor exits
+- [x] `phyl config add <type> <name>`: append config section template
+      for mcp/poll/hook/sse/watch/bridge signal
+- [x] `phyl config add-secret <KEY> <VALUE>`: append to secrets.env,
+      check for duplicates
+- [x] `phyl config list-secrets`: display keys with masked values
+- [x] `phyl config remove-secret <KEY>`: remove from secrets.env
+
+### Setup Subcommands
+
+- [x] `phyl setup systemd`: generate systemd user unit files from
+      current config (only for configured services), install to
+      `~/.config/systemd/user/`, run `daemon-reload` + `enable` +
+      `start`. Idempotent — regenerates on re-run. Units include
+      `EnvironmentFile` for secrets, `Restart=on-failure`,
+      dependency ordering (poller/listener/bridge after daemon).
+- [x] `phyl setup status`: show operational health — home directory
+      (XDG or legacy), config validity, secrets count, service
+      status (daemon reachability via GET /health, systemd unit
+      status for others), session summary from daemon API
+- [x] `phyl setup migrate-xdg`: move `~/.phylactery` to
+      `~/.local/share/phylactery`, create `~/.config/phylactery/`
+      symlink, safety check (requires `--force`)
+
+### Enhanced Init
+
+- [x] Default path remains `~/.phylactery` via `$PHYLACTERY_HOME`
+      (XDG default when `$PHYLACTERY_HOME` not set in `phyl-core`)
+- [x] Creates `secrets.env` (empty, chmod 600, gitignored)
+- [x] Creates `~/.config/phylactery/` symlink to config.toml
+      (when using XDG paths)
+- [x] Creates `poll/` directory with `.gitignore`
+- [x] `--systemd` flag for combined init + service install
+- [x] Prints next-steps guidance after init
+- [x] Updated config template with commented-out `[[poll]]` and
+      `[listen]` examples
+
+### Start --all (Non-systemd Fallback)
+
+- [x] `phyl start --all`: starts daemon first, waits for socket,
+      then starts poller/listener/bridge based on config.
+      Ctrl-C sends SIGTERM to all children.
+      Only starts services that have configuration.
+
+### Unit Tests
+
+- [x] Config validation rules (secret refs, comments), secrets file
+      parsing (empty, with entries), systemd unit generation (daemon,
+      with dependency), secret counting (8 tests total)

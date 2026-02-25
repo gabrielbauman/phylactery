@@ -211,6 +211,10 @@ pub struct Config {
     pub mcp: Vec<McpServerConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge: Option<BridgeConfig>,
+    #[serde(default)]
+    pub poll: Vec<PollConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listen: Option<ListenConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,6 +317,8 @@ impl Default for Config {
             git: GitConfig::default(),
             mcp: Vec::new(),
             bridge: None,
+            poll: Vec::new(),
+            listen: None,
         }
     }
 }
@@ -350,6 +356,129 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+}
+
+// --- Poll configuration (used by phyl-poll) ---
+
+/// Configuration for a single poll rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_poll_interval")]
+    pub interval: u64,
+    pub prompt: String,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub shell: bool,
+    #[serde(default = "default_poll_timeout")]
+    pub timeout: u64,
+}
+
+fn default_poll_interval() -> u64 {
+    300
+}
+
+fn default_poll_timeout() -> u64 {
+    30
+}
+
+// --- Listen configuration (used by phyl-listen) ---
+
+/// Top-level listen configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenConfig {
+    #[serde(default = "default_listen_bind")]
+    pub bind: String,
+    #[serde(default)]
+    pub hook: Vec<ListenHookConfig>,
+    #[serde(default)]
+    pub sse: Vec<ListenSseConfig>,
+    #[serde(default)]
+    pub watch: Vec<ListenWatchConfig>,
+}
+
+fn default_listen_bind() -> String {
+    "127.0.0.1:7890".to_string()
+}
+
+/// Configuration for a webhook listener.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenHookConfig {
+    pub name: String,
+    pub path: String,
+    pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_header: Option<String>,
+    #[serde(default)]
+    pub filter_values: Vec<String>,
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit: u32,
+    #[serde(default = "default_dedup_header")]
+    pub dedup_header: String,
+    #[serde(default = "default_max_body_size")]
+    pub max_body_size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_header: Option<String>,
+    #[serde(default)]
+    pub routes: std::collections::HashMap<String, String>,
+}
+
+fn default_rate_limit() -> u32 {
+    10
+}
+
+fn default_dedup_header() -> String {
+    "X-Request-Id".to_string()
+}
+
+fn default_max_body_size() -> usize {
+    1_048_576 // 1 MB
+}
+
+/// Configuration for an SSE subscription listener.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenSseConfig {
+    pub name: String,
+    pub url: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub events: Vec<String>,
+    #[serde(default)]
+    pub route_event: bool,
+    #[serde(default)]
+    pub routes: std::collections::HashMap<String, String>,
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit: u32,
+}
+
+/// Configuration for a file watch listener.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenWatchConfig {
+    pub name: String,
+    pub path: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub recursive: bool,
+    #[serde(default)]
+    pub events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glob: Option<String>,
+    #[serde(default = "default_debounce")]
+    pub debounce: u64,
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit: u32,
+}
+
+fn default_debounce() -> u64 {
+    2
 }
 
 // --- Session status (used by the daemon API) ---

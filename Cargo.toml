@@ -11,6 +11,8 @@ members = [
     "crates/phyl-tool-session",
     "crates/phyl-tool-mcp",
     "crates/phyl-bridge-signal",
+    "crates/phyl-poll",
+    "crates/phyl-listen",
 ]
 
 [workspace.dependencies]
