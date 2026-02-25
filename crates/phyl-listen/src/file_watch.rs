@@ -45,13 +45,7 @@ pub async fn run_file_watches(
 
                 // Add recursive watches for subdirectories
                 if watch_config.recursive && path.is_dir() {
-                    add_recursive_watches(
-                        &mut inotify,
-                        path,
-                        mask,
-                        i,
-                        &mut wd_map,
-                    );
+                    add_recursive_watches(&mut inotify, path, mask, i, &mut wd_map);
                 }
             }
             Err(e) => {
@@ -107,10 +101,7 @@ pub async fn run_file_watches(
             let prompt = assemble_file_prompt(watch_config, &path, &event_type);
             match daemon_client::create_session(socket, &prompt).await {
                 Ok(id) => {
-                    eprintln!(
-                        "phyl-listen: [{}] session created: {id}",
-                        watch_config.name
-                    );
+                    eprintln!("phyl-listen: [{}] session created: {id}", watch_config.name);
                 }
                 Err(e) => {
                     eprintln!(
@@ -168,11 +159,10 @@ pub async fn run_file_watches(
                                     }
 
                                     // Apply glob filter
-                                    if let Some(glob_pattern) = &watch_config.glob {
-                                        if !glob_matches(glob_pattern, &filename) {
+                                    if let Some(glob_pattern) = &watch_config.glob
+                                        && !glob_matches(glob_pattern, &filename) {
                                             continue;
                                         }
-                                    }
 
                                     // Map inotify event to our event type
                                     let event_type = mask_to_event_type(&event.mask);
@@ -296,12 +286,13 @@ fn assemble_file_prompt(config: &ListenWatchConfig, path: &Path, event_type: &st
         prompt.push_str(&format!("\nSize: {} bytes", metadata.len()));
 
         // Include file content for create/modify on small files
-        if (event_type == "create" || event_type == "modify") && metadata.len() < 100_000 {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                prompt.push_str(&format!("\n\n=== FILE CONTENT ===\n{content}"));
-            }
-            // Skip binary files silently
+        if (event_type == "create" || event_type == "modify")
+            && metadata.len() < 100_000
+            && let Ok(content) = std::fs::read_to_string(path)
+        {
+            prompt.push_str(&format!("\n\n=== FILE CONTENT ===\n{content}"));
         }
+        // Skip binary files silently
     }
 
     prompt

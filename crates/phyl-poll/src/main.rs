@@ -8,7 +8,7 @@ use hyper::client::conn::http1;
 use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 use phyl_core::{Config, PollConfig};
-use std::path::PathBuf;
+use std::path::Path;
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 use tokio::time::{Duration, sleep};
@@ -46,13 +46,9 @@ async fn run() -> Result<(), String> {
 
     let socket = config.daemon.socket.clone();
     let poll_dir = home.join("poll");
-    std::fs::create_dir_all(&poll_dir)
-        .map_err(|e| format!("failed to create poll dir: {e}"))?;
+    std::fs::create_dir_all(&poll_dir).map_err(|e| format!("failed to create poll dir: {e}"))?;
 
-    eprintln!(
-        "phyl-poll: starting with {} poll rule(s)",
-        poll_rules.len()
-    );
+    eprintln!("phyl-poll: starting with {} poll rule(s)", poll_rules.len());
 
     // Shutdown signal
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -90,7 +86,7 @@ async fn run() -> Result<(), String> {
 /// Run a single poll rule on its configured interval.
 async fn run_poll_rule(
     rule: &PollConfig,
-    poll_dir: &PathBuf,
+    poll_dir: &Path,
     socket: &str,
     shutdown: &mut watch::Receiver<bool>,
 ) {
@@ -126,14 +122,20 @@ async fn run_poll_rule(
                     }
                     Some(prev) => {
                         // Output changed — create a session
-                        eprintln!("phyl-poll: [{}] change detected, creating session", rule.name);
+                        eprintln!(
+                            "phyl-poll: [{}] change detected, creating session",
+                            rule.name
+                        );
                         let prompt = assemble_prompt(&rule.prompt, &prev, &output);
                         match create_session(socket, &prompt).await {
                             Ok(id) => {
                                 eprintln!("phyl-poll: [{}] session created: {id}", rule.name);
                             }
                             Err(e) => {
-                                eprintln!("phyl-poll: [{}] failed to create session: {e}", rule.name);
+                                eprintln!(
+                                    "phyl-poll: [{}] failed to create session: {e}",
+                                    rule.name
+                                );
                             }
                         }
                         if let Err(e) = std::fs::write(&last_file, &output) {
@@ -198,10 +200,7 @@ async fn run_command(rule: &PollConfig) -> Result<String, String> {
 
     match result {
         Ok(r) => r,
-        Err(_) => Err(format!(
-            "timed out after {}s",
-            rule.timeout
-        )),
+        Err(_) => Err(format!("timed out after {}s", rule.timeout)),
     }
 }
 
@@ -250,7 +249,12 @@ fn expand_env_var(s: &str) -> String {
         if let Some(end) = result[start..].find('}') {
             let var_name = &result[start + 2..start + end];
             let value = std::env::var(var_name).unwrap_or_default();
-            result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                value,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
@@ -263,9 +267,7 @@ fn expand_env_var(s: &str) -> String {
         if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] != b'{' {
             let start = i + 1;
             let mut end = start;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
-            {
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
             }
             if end > start {
@@ -306,7 +308,9 @@ fn load_secrets_env(path: &std::path::Path) {
                 let value = value.trim();
                 if !key.is_empty() {
                     // SAFETY: We load secrets at startup before spawning threads.
-                    unsafe { std::env::set_var(key, value); }
+                    unsafe {
+                        std::env::set_var(key, value);
+                    }
                 }
             }
         }
@@ -354,10 +358,10 @@ async fn create_session(socket: &str, prompt: &str) -> Result<String, String> {
 
     if status.is_success() {
         // Try to extract session ID from response
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(id) = v.get("id").and_then(|v| v.as_str()) {
-                return Ok(id.to_string());
-            }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(id) = v.get("id").and_then(|v| v.as_str())
+        {
+            return Ok(id.to_string());
         }
         Ok(text)
     } else {
@@ -413,37 +417,50 @@ mod tests {
 
     #[test]
     fn test_expand_env_var_simple() {
-        unsafe { std::env::set_var("PHYL_TEST_VAR", "hello"); }
+        unsafe {
+            std::env::set_var("PHYL_TEST_VAR", "hello");
+        }
         assert_eq!(expand_env_var("$PHYL_TEST_VAR"), "hello");
-        unsafe { std::env::remove_var("PHYL_TEST_VAR"); }
+        unsafe {
+            std::env::remove_var("PHYL_TEST_VAR");
+        }
     }
 
     #[test]
     fn test_expand_env_var_braces() {
-        unsafe { std::env::set_var("PHYL_TEST_VAR2", "world"); }
+        unsafe {
+            std::env::set_var("PHYL_TEST_VAR2", "world");
+        }
         assert_eq!(expand_env_var("${PHYL_TEST_VAR2}"), "world");
-        unsafe { std::env::remove_var("PHYL_TEST_VAR2"); }
+        unsafe {
+            std::env::remove_var("PHYL_TEST_VAR2");
+        }
     }
 
     #[test]
     fn test_expand_env_var_missing() {
-        assert_eq!(
-            expand_env_var("$PHYL_NONEXISTENT_VAR_12345"),
-            ""
-        );
+        assert_eq!(expand_env_var("$PHYL_NONEXISTENT_VAR_12345"), "");
     }
 
     #[test]
     fn test_expand_env_var_mixed() {
-        unsafe { std::env::set_var("PHYL_MIX_A", "foo"); }
-        unsafe { std::env::set_var("PHYL_MIX_B", "bar"); }
+        unsafe {
+            std::env::set_var("PHYL_MIX_A", "foo");
+        }
+        unsafe {
+            std::env::set_var("PHYL_MIX_B", "bar");
+        }
         assert_eq!(
             expand_env_var("prefix_${PHYL_MIX_A}_$PHYL_MIX_B_suffix"),
             // PHYL_MIX_B_suffix doesn't exist, so it expands to empty
             "prefix_foo_"
         );
-        unsafe { std::env::remove_var("PHYL_MIX_A"); }
-        unsafe { std::env::remove_var("PHYL_MIX_B"); }
+        unsafe {
+            std::env::remove_var("PHYL_MIX_A");
+        }
+        unsafe {
+            std::env::remove_var("PHYL_MIX_B");
+        }
     }
 
     #[test]
@@ -520,7 +537,7 @@ mod tests {
         let path = dir.join("test_secrets.env");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "# comment").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, "PHYL_TEST_SECRET_A=value_a").unwrap();
         writeln!(f, "PHYL_TEST_SECRET_B = value_b").unwrap();
         drop(f);
@@ -530,8 +547,12 @@ mod tests {
         assert_eq!(std::env::var("PHYL_TEST_SECRET_B").unwrap(), "value_b");
 
         // Cleanup
-        unsafe { std::env::remove_var("PHYL_TEST_SECRET_A"); }
-        unsafe { std::env::remove_var("PHYL_TEST_SECRET_B"); }
+        unsafe {
+            std::env::remove_var("PHYL_TEST_SECRET_A");
+        }
+        unsafe {
+            std::env::remove_var("PHYL_TEST_SECRET_B");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

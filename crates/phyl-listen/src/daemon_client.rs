@@ -47,10 +47,10 @@ pub async fn create_session(socket: &str, prompt: &str) -> Result<String, String
     let text = String::from_utf8_lossy(&body_bytes).to_string();
 
     if status.is_success() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(id) = v.get("id").and_then(|v| v.as_str()) {
-                return Ok(id.to_string());
-            }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(id) = v.get("id").and_then(|v| v.as_str())
+        {
+            return Ok(id.to_string());
         }
         Ok(text)
     } else {

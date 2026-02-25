@@ -1,12 +1,13 @@
 //! `phyl config` subcommands — configuration management.
 
+use anyhow::{Context, bail};
 use phyl_core::{Config, home_dir};
 use std::path::{Path, PathBuf};
 
 /// Run `phyl config <subcommand> [args...]`.
-pub fn run(args: &[String]) -> Result<(), String> {
+pub fn run(args: &[String]) -> anyhow::Result<()> {
     if args.is_empty() {
-        return Err("Usage: phyl config <show|validate|edit|add|add-secret|list-secrets|remove-secret>".to_string());
+        bail!("Usage: phyl config <show|validate|edit|add|add-secret|list-secrets|remove-secret>");
     }
 
     match args[0].as_str() {
@@ -17,16 +18,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "add-secret" => cmd_add_secret(&args[1..]),
         "list-secrets" => cmd_list_secrets(),
         "remove-secret" => cmd_remove_secret(&args[1..]),
-        other => Err(format!("unknown config subcommand: {other}")),
+        other => bail!("unknown config subcommand: {other}"),
     }
 }
 
 /// Pretty-print resolved config with secrets masked.
-fn cmd_show() -> Result<(), String> {
+fn cmd_show() -> anyhow::Result<()> {
     let home = home_dir();
     let config_path = home.join("config.toml");
-    let contents = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("failed to read config.toml: {e}"))?;
+    let contents = std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
 
     // Load secrets for masking
     let secrets = load_secrets(&home);
@@ -49,14 +49,12 @@ fn cmd_show() -> Result<(), String> {
 }
 
 /// Validate config.toml for errors.
-fn cmd_validate() -> Result<(), String> {
+fn cmd_validate() -> anyhow::Result<()> {
     let home = home_dir();
     let config_path = home.join("config.toml");
-    let contents = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("failed to read config.toml: {e}"))?;
+    let contents = std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
 
-    let config: Config = toml::from_str(&contents)
-        .map_err(|e| format!("config.toml parse error: {e}"))?;
+    let config: Config = toml::from_str(&contents).context("config.toml parse error")?;
 
     let mut warnings = Vec::new();
 
@@ -120,21 +118,20 @@ fn cmd_validate() -> Result<(), String> {
 }
 
 /// Open config.toml in $EDITOR.
-fn cmd_edit() -> Result<(), String> {
+fn cmd_edit() -> anyhow::Result<()> {
     let home = home_dir();
     let config_path = home.join("config.toml");
 
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| {
-        std::env::var("VISUAL").unwrap_or_else(|_| "vi".to_string())
-    });
+    let editor = std::env::var("EDITOR")
+        .unwrap_or_else(|_| std::env::var("VISUAL").unwrap_or_else(|_| "vi".to_string()));
 
     let status = std::process::Command::new(&editor)
         .arg(&config_path)
         .status()
-        .map_err(|e| format!("failed to launch editor '{editor}': {e}"))?;
+        .with_context(|| format!("failed to launch editor '{editor}'"))?;
 
     if !status.success() {
-        return Err("editor exited with error".to_string());
+        bail!("editor exited with error");
     }
 
     // Validate after editing
@@ -143,9 +140,9 @@ fn cmd_edit() -> Result<(), String> {
 }
 
 /// Add a config section interactively or via flags.
-fn cmd_add(args: &[String]) -> Result<(), String> {
+fn cmd_add(args: &[String]) -> anyhow::Result<()> {
     if args.is_empty() {
-        return Err("Usage: phyl config add <mcp|poll|hook|sse|watch|bridge> <name>".to_string());
+        bail!("Usage: phyl config add <mcp|poll|hook|sse|watch|bridge> <name>");
     }
 
     let section_type = args[0].as_str();
@@ -157,7 +154,7 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
     let snippet = match section_type {
         "mcp" => {
             if name.is_empty() {
-                return Err("Usage: phyl config add mcp <name>".to_string());
+                bail!("Usage: phyl config add mcp <name>");
             }
             format!(
                 r#"
@@ -171,7 +168,7 @@ command = ""          # Path to MCP server command
         }
         "poll" => {
             if name.is_empty() {
-                return Err("Usage: phyl config add poll <name>".to_string());
+                bail!("Usage: phyl config add poll <name>");
             }
             format!(
                 r#"
@@ -188,7 +185,7 @@ prompt = ""           # What to do when output changes
         }
         "hook" => {
             if name.is_empty() {
-                return Err("Usage: phyl config add hook <name>".to_string());
+                bail!("Usage: phyl config add hook <name>");
             }
             format!(
                 r#"
@@ -204,7 +201,7 @@ prompt = ""           # What to do when webhook fires
         }
         "sse" => {
             if name.is_empty() {
-                return Err("Usage: phyl config add sse <name>".to_string());
+                bail!("Usage: phyl config add sse <name>");
             }
             format!(
                 r#"
@@ -221,7 +218,7 @@ prompt = ""           # What to do when event arrives
         }
         "watch" => {
             if name.is_empty() {
-                return Err("Usage: phyl config add watch <name>".to_string());
+                bail!("Usage: phyl config add watch <name>");
             }
             format!(
                 r#"
@@ -238,7 +235,7 @@ prompt = ""           # What to do when file changes
         }
         "bridge" => {
             if args.get(1).map(|s| s.as_str()) != Some("signal") {
-                return Err("Usage: phyl config add bridge signal".to_string());
+                bail!("Usage: phyl config add bridge signal");
             }
             r#"
 [bridge.signal]
@@ -249,18 +246,15 @@ signal_cli = "signal-cli"
             .to_string()
         }
         other => {
-            return Err(format!(
-                "unknown config section: {other}. Use: mcp, poll, hook, sse, watch, bridge"
-            ));
+            bail!("unknown config section: {other}. Use: mcp, poll, hook, sse, watch, bridge");
         }
     };
 
     // Append to config.toml
-    let mut contents = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("failed to read config.toml: {e}"))?;
+    let mut contents =
+        std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
     contents.push_str(&snippet);
-    std::fs::write(&config_path, &contents)
-        .map_err(|e| format!("failed to write config.toml: {e}"))?;
+    std::fs::write(&config_path, &contents).context("failed to write config.toml")?;
 
     eprintln!("Added {section_type} section to config.toml");
     eprintln!("Edit with: phyl config edit");
@@ -268,9 +262,9 @@ signal_cli = "signal-cli"
 }
 
 /// Add a secret to secrets.env.
-fn cmd_add_secret(args: &[String]) -> Result<(), String> {
+fn cmd_add_secret(args: &[String]) -> anyhow::Result<()> {
     if args.len() < 2 {
-        return Err("Usage: phyl config add-secret <KEY> <VALUE>".to_string());
+        bail!("Usage: phyl config add-secret <KEY> <VALUE>");
     }
 
     let key = &args[0];
@@ -284,10 +278,12 @@ fn cmd_add_secret(args: &[String]) -> Result<(), String> {
     // Check if key already exists
     for line in contents.lines() {
         let line = line.trim();
-        if let Some((k, _)) = line.split_once('=') {
-            if k.trim() == key {
-                return Err(format!("secret '{key}' already exists. Remove it first with: phyl config remove-secret {key}"));
-            }
+        if let Some((k, _)) = line.split_once('=')
+            && k.trim() == key
+        {
+            bail!(
+                "secret '{key}' already exists. Remove it first with: phyl config remove-secret {key}"
+            );
         }
     }
 
@@ -296,15 +292,14 @@ fn cmd_add_secret(args: &[String]) -> Result<(), String> {
         contents.push('\n');
     }
     contents.push_str(&format!("{key}={value}\n"));
-    std::fs::write(&secrets_path, &contents)
-        .map_err(|e| format!("failed to write secrets.env: {e}"))?;
+    std::fs::write(&secrets_path, &contents).context("failed to write secrets.env")?;
 
     eprintln!("Added secret: {key}");
     Ok(())
 }
 
 /// List secret keys with values masked.
-fn cmd_list_secrets() -> Result<(), String> {
+fn cmd_list_secrets() -> anyhow::Result<()> {
     let home = home_dir();
     let secrets = load_secrets(&home);
 
@@ -329,37 +324,35 @@ fn cmd_list_secrets() -> Result<(), String> {
 }
 
 /// Remove a secret from secrets.env.
-fn cmd_remove_secret(args: &[String]) -> Result<(), String> {
+fn cmd_remove_secret(args: &[String]) -> anyhow::Result<()> {
     if args.is_empty() {
-        return Err("Usage: phyl config remove-secret <KEY>".to_string());
+        bail!("Usage: phyl config remove-secret <KEY>");
     }
 
     let key = &args[0];
     let home = home_dir();
     let secrets_path = home.join("secrets.env");
-    let contents = std::fs::read_to_string(&secrets_path)
-        .map_err(|e| format!("failed to read secrets.env: {e}"))?;
+    let contents = std::fs::read_to_string(&secrets_path).context("failed to read secrets.env")?;
 
     let mut found = false;
     let mut new_contents = String::new();
     for line in contents.lines() {
         let trimmed = line.trim();
-        if let Some((k, _)) = trimmed.split_once('=') {
-            if k.trim() == key {
-                found = true;
-                continue;
-            }
+        if let Some((k, _)) = trimmed.split_once('=')
+            && k.trim() == key
+        {
+            found = true;
+            continue;
         }
         new_contents.push_str(line);
         new_contents.push('\n');
     }
 
     if !found {
-        return Err(format!("secret '{key}' not found"));
+        bail!("secret '{key}' not found");
     }
 
-    std::fs::write(&secrets_path, &new_contents)
-        .map_err(|e| format!("failed to write secrets.env: {e}"))?;
+    std::fs::write(&secrets_path, &new_contents).context("failed to write secrets.env")?;
 
     eprintln!("Removed secret: {key}");
     Ok(())
@@ -499,10 +492,7 @@ secret = "$MISSING_SECRET"
         let secrets = vec![("MY_KEY".to_string(), "value".to_string())];
         let mut warnings = Vec::new();
         check_secret_refs(config, &secrets, &mut warnings);
-        assert!(
-            warnings.is_empty(),
-            "expected no warnings: {warnings:?}"
-        );
+        assert!(warnings.is_empty(), "expected no warnings: {warnings:?}");
     }
 
     #[test]

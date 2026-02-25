@@ -48,13 +48,13 @@ fn run_command(command: &str) -> ToolOutput {
         .map(|dir| std::path::PathBuf::from(dir).join("scratch"));
 
     // Create scratch directory if it doesn't exist.
-    if let Some(ref dir) = work_dir {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            return ToolOutput {
-                output: None,
-                error: Some(format!("Failed to create scratch directory: {e}")),
-            };
-        }
+    if let Some(ref dir) = work_dir
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        return ToolOutput {
+            output: None,
+            error: Some(format!("Failed to create scratch directory: {e}")),
+        };
     }
 
     let timeout = std::env::var("PHYLACTERY_TOOL_TIMEOUT")
@@ -100,7 +100,9 @@ fn run_command(command: &str) -> ToolOutput {
                     error: None,
                 }
             } else {
-                let code = status.code().map_or("unknown".to_string(), |c| c.to_string());
+                let code = status
+                    .code()
+                    .map_or("unknown".to_string(), |c| c.to_string());
                 ToolOutput {
                     output: if combined.is_empty() {
                         None

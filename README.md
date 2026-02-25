@@ -161,6 +161,17 @@ Full documentation lives in [docs/](docs/README.md), with a page for every compo
 
 **Concepts**: [Sessions](docs/sessions.md) -- [Knowledge Base](docs/knowledge-base.md) -- [Identity Files](docs/identity-files.md)
 
+## Security
+
+Phylactery runs on your machine with your privileges. A few things to be aware of:
+
+- **No network exposure by default.** The daemon listens on a Unix socket, not TCP. Only local processes with filesystem access to the socket can connect.
+- **Socket permissions.** The daemon socket is created with mode `0600` (owner-only). Other users on the system cannot connect.
+- **Secrets management.** API keys and webhook secrets live in `secrets.env` (mode `0600`, gitignored). They are loaded into the process environment at startup, never written to logs or config files.
+- **Webhook verification.** Inbound webhooks are verified with HMAC-SHA256 signatures (GitHub and GitLab formats supported). Always configure a `secret` for production webhooks.
+- **Tool sandboxing.** Tool specs declare sandbox boundaries (allowed paths, network access, resource limits). The file tool validates paths against allowed directories to prevent traversal.
+- **The agent runs code.** The bash tool executes shell commands. LAW.md exists to constrain behavior, but treat the agent as having your user's full capabilities within its sandbox.
+
 ## Requirements
 
 - Rust (edition 2024) for building

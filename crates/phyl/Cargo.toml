@@ -17,3 +17,4 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 libc = { workspace = true }
+anyhow = { workspace = true }

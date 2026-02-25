@@ -83,8 +83,7 @@ fn format_tool_definitions(tools: &[ToolSpec]) -> String {
         s.push_str(&format!("{}\n\n", tool.description));
         s.push_str("Parameters:\n```json\n");
         s.push_str(
-            &serde_json::to_string_pretty(&tool.parameters)
-                .unwrap_or_else(|_| "{}".to_string()),
+            &serde_json::to_string_pretty(&tool.parameters).unwrap_or_else(|_| "{}".to_string()),
         );
         s.push_str("\n```\n\n");
     }
@@ -327,17 +326,17 @@ fn extract_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
         if let Some(end) = after_open.find(TOOL_CALL_CLOSE) {
             let call_json = after_open[..end].trim();
 
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(call_json) {
-                if let (Some(name), Some(arguments)) = (
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(call_json)
+                && let (Some(name), Some(arguments)) = (
                     parsed.get("name").and_then(|v| v.as_str()),
                     parsed.get("arguments"),
-                ) {
-                    tool_calls.push(ToolCall {
-                        id: format!("tc_{}", Uuid::new_v4()),
-                        name: name.to_string(),
-                        arguments: arguments.clone(),
-                    });
-                }
+                )
+            {
+                tool_calls.push(ToolCall {
+                    id: format!("tc_{}", Uuid::new_v4()),
+                    name: name.to_string(),
+                    arguments: arguments.clone(),
+                });
             }
 
             remaining = &after_open[end + TOOL_CALL_CLOSE.len()..];
@@ -415,8 +414,7 @@ mod tests {
 
     #[test]
     fn extract_invalid_json_in_tag() {
-        let text =
-            "<tool_call>not valid json</tool_call> rest";
+        let text = "<tool_call>not valid json</tool_call> rest";
         let (content, calls) = extract_tool_calls(text);
         assert!(calls.is_empty());
         // The tag is consumed but the invalid call is dropped.
@@ -426,8 +424,7 @@ mod tests {
     #[test]
     fn extract_missing_fields_in_json() {
         // Valid JSON but missing required fields.
-        let text =
-            "<tool_call>{\"foo\": \"bar\"}</tool_call>";
+        let text = "<tool_call>{\"foo\": \"bar\"}</tool_call>";
         let (content, calls) = extract_tool_calls(text);
         assert!(calls.is_empty());
         assert!(content.is_empty());

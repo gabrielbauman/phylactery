@@ -18,9 +18,8 @@ socket = "/run/user/1000/phylactery.sock"  # default: $XDG_RUNTIME_DIR/phylacter
 ```toml
 [session]
 max_concurrent = 4         # max simultaneous sessions
-timeout = 3600             # session timeout in seconds (default: 1 hour)
-model_adapter = "phyl-model-claude"  # model adapter binary
-max_retries = 3            # model invocation retries on failure
+timeout_minutes = 60       # session timeout in minutes (default: 60)
+model = "phyl-model-claude"  # model adapter binary
 ```
 
 ### Git Settings

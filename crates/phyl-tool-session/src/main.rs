@@ -136,7 +136,10 @@ fn serve() {
                         .and_then(|v| v.as_str())
                         .unwrap_or("(no question provided)");
 
-                    eprintln!("phyl-tool-session: ask_human waiting for answer (id: {}): {question}", req.id);
+                    eprintln!(
+                        "phyl-tool-session: ask_human waiting for answer (id: {}): {question}",
+                        req.id
+                    );
 
                     // We block here waiting for the session runner to forward an answer.
                     // The runner reads the FIFO, matches the answer to our request ID,
@@ -179,7 +182,9 @@ fn serve() {
                                 // EOF — stdin closed, session ending.
                                 let response = ServerResponse {
                                     id: pending_id,
-                                    output: Some("Session ended before human responded".to_string()),
+                                    output: Some(
+                                        "Session ended before human responded".to_string(),
+                                    ),
                                     error: None,
                                     signal: None,
                                 };
@@ -193,57 +198,62 @@ fn serve() {
                                 }
 
                                 // Try to parse as ForwardedAnswer.
-                                if let Ok(fwd) = serde_json::from_str::<ForwardedAnswer>(trimmed) {
-                                    if fwd.id == pending_id {
-                                        let output = if fwd.timeout {
-                                            "No response from human — timed out".to_string()
-                                        } else {
-                                            fwd.answer.unwrap_or_else(|| "No response".to_string())
-                                        };
+                                if let Ok(fwd) = serde_json::from_str::<ForwardedAnswer>(trimmed)
+                                    && fwd.id == pending_id
+                                {
+                                    let output = if fwd.timeout {
+                                        "No response from human — timed out".to_string()
+                                    } else {
+                                        fwd.answer.unwrap_or_else(|| "No response".to_string())
+                                    };
 
-                                        let response = ServerResponse {
-                                            id: pending_id,
-                                            output: Some(format!("Human answered: {output}")),
-                                            error: None,
-                                            signal: None,
-                                        };
-                                        write_response(&mut writer, &response);
-                                        break;
-                                    }
+                                    let response = ServerResponse {
+                                        id: pending_id,
+                                        output: Some(format!("Human answered: {output}")),
+                                        error: None,
+                                        signal: None,
+                                    };
+                                    write_response(&mut writer, &response);
+                                    break;
                                 }
 
                                 // If it's a different ServerRequest (e.g., a done call),
                                 // handle it inline.
-                                if let Ok(other_req) = serde_json::from_str::<ServerRequest>(trimmed) {
-                                    if other_req.name == "done" {
-                                        let summary = other_req
-                                            .arguments
-                                            .get("summary")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("Session complete");
+                                if let Ok(other_req) =
+                                    serde_json::from_str::<ServerRequest>(trimmed)
+                                    && other_req.name == "done"
+                                {
+                                    let summary = other_req
+                                        .arguments
+                                        .get("summary")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Session complete");
 
-                                        let response = ServerResponse {
-                                            id: other_req.id,
-                                            output: Some(summary.to_string()),
-                                            error: None,
-                                            signal: Some("end_session".to_string()),
-                                        };
-                                        write_response(&mut writer, &response);
+                                    let response = ServerResponse {
+                                        id: other_req.id,
+                                        output: Some(summary.to_string()),
+                                        error: None,
+                                        signal: Some("end_session".to_string()),
+                                    };
+                                    write_response(&mut writer, &response);
 
-                                        // Also respond to the pending ask_human.
-                                        let cancel_response = ServerResponse {
-                                            id: pending_id,
-                                            output: Some("Session ended while waiting for human".to_string()),
-                                            error: None,
-                                            signal: None,
-                                        };
-                                        write_response(&mut writer, &cancel_response);
-                                        return;
-                                    }
+                                    // Also respond to the pending ask_human.
+                                    let cancel_response = ServerResponse {
+                                        id: pending_id,
+                                        output: Some(
+                                            "Session ended while waiting for human".to_string(),
+                                        ),
+                                        error: None,
+                                        signal: None,
+                                    };
+                                    write_response(&mut writer, &cancel_response);
+                                    return;
                                 }
                             }
                             Err(e) => {
-                                eprintln!("phyl-tool-session: stdin error while waiting for answer: {e}");
+                                eprintln!(
+                                    "phyl-tool-session: stdin error while waiting for answer: {e}"
+                                );
                                 let response = ServerResponse {
                                     id: pending_id,
                                     output: None,

@@ -1,9 +1,10 @@
 //! `phyl start [-d]` — launch the phylactd daemon.
 
+use anyhow::{Context, bail};
 use std::process::{Command, Stdio};
 
 /// Run the `start` command.
-pub fn run(detach: bool) -> Result<(), String> {
+pub fn run(detach: bool) -> anyhow::Result<()> {
     let binary = find_daemon()?;
 
     if detach {
@@ -13,36 +14,36 @@ pub fn run(detach: bool) -> Result<(), String> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("failed to start daemon: {e}"))?;
+            .context("failed to start daemon")?;
 
         eprintln!("phylactd started (pid {})", child.id());
         Ok(())
     } else {
         // Foreground: exec the daemon (replace this process).
         let err = exec_replace(&binary);
-        Err(format!("failed to exec daemon: {err}"))
+        bail!("failed to exec daemon: {err}");
     }
 }
 
 /// Find the phylactd binary.
-fn find_daemon() -> Result<String, String> {
+fn find_daemon() -> anyhow::Result<String> {
     // Check $PATH.
-    if let Ok(output) = Command::new("which").arg("phylactd").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(path);
-            }
+    if let Ok(output) = Command::new("which").arg("phylactd").output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(path);
         }
     }
 
     // Check same directory as current executable.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("phylactd");
-            if candidate.exists() {
-                return Ok(candidate.to_string_lossy().to_string());
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join("phylactd");
+        if candidate.exists() {
+            return Ok(candidate.to_string_lossy().to_string());
         }
     }
 
@@ -51,21 +52,17 @@ fn find_daemon() -> Result<String, String> {
 }
 
 /// Start all services in foreground (no systemd).
-pub async fn run_all() -> Result<(), String> {
+pub async fn run_all() -> anyhow::Result<()> {
     let home = phyl_core::home_dir();
     if !home.exists() {
-        return Err(format!(
-            "{} does not exist. Run `phyl init` first.",
-            home.display()
-        ));
+        bail!("{} does not exist. Run `phyl init` first.", home.display());
     }
 
     let config = {
         let config_path = home.join("config.toml");
-        let contents = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("failed to read config.toml: {e}"))?;
-        toml::from_str::<phyl_core::Config>(&contents)
-            .map_err(|e| format!("failed to parse config.toml: {e}"))?
+        let contents =
+            std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
+        toml::from_str::<phyl_core::Config>(&contents).context("failed to parse config.toml")?
     };
 
     let mut children = Vec::new();
@@ -75,7 +72,7 @@ pub async fn run_all() -> Result<(), String> {
     eprintln!("Starting phylactd...");
     let daemon = Command::new(&daemon_bin)
         .spawn()
-        .map_err(|e| format!("failed to start daemon: {e}"))?;
+        .context("failed to start daemon")?;
     children.push(("phylactd", daemon));
 
     // Wait for socket to appear
@@ -88,40 +85,38 @@ pub async fn run_all() -> Result<(), String> {
     }
 
     // Start phyl-poll if configured
-    if !config.poll.is_empty() {
-        if let Some(bin) = find_binary("phyl-poll") {
-            eprintln!("Starting phyl-poll...");
-            let child = Command::new(&bin)
-                .spawn()
-                .map_err(|e| format!("failed to start phyl-poll: {e}"))?;
-            children.push(("phyl-poll", child));
-        }
+    if !config.poll.is_empty()
+        && let Some(bin) = find_binary("phyl-poll")
+    {
+        eprintln!("Starting phyl-poll...");
+        let child = Command::new(&bin)
+            .spawn()
+            .context("failed to start phyl-poll")?;
+        children.push(("phyl-poll", child));
     }
 
     // Start phyl-listen if configured
-    if let Some(listen) = &config.listen {
-        if !listen.hook.is_empty() || !listen.sse.is_empty() || !listen.watch.is_empty() {
-            if let Some(bin) = find_binary("phyl-listen") {
-                eprintln!("Starting phyl-listen...");
-                let child = Command::new(&bin)
-                    .spawn()
-                    .map_err(|e| format!("failed to start phyl-listen: {e}"))?;
-                children.push(("phyl-listen", child));
-            }
-        }
+    if let Some(listen) = &config.listen
+        && (!listen.hook.is_empty() || !listen.sse.is_empty() || !listen.watch.is_empty())
+        && let Some(bin) = find_binary("phyl-listen")
+    {
+        eprintln!("Starting phyl-listen...");
+        let child = Command::new(&bin)
+            .spawn()
+            .context("failed to start phyl-listen")?;
+        children.push(("phyl-listen", child));
     }
 
     // Start phyl-bridge-signal if configured
-    if let Some(bridge) = &config.bridge {
-        if bridge.signal.is_some() {
-            if let Some(bin) = find_binary("phyl-bridge-signal") {
-                eprintln!("Starting phyl-bridge-signal...");
-                let child = Command::new(&bin)
-                    .spawn()
-                    .map_err(|e| format!("failed to start phyl-bridge-signal: {e}"))?;
-                children.push(("phyl-bridge-signal", child));
-            }
-        }
+    if let Some(bridge) = &config.bridge
+        && bridge.signal.is_some()
+        && let Some(bin) = find_binary("phyl-bridge-signal")
+    {
+        eprintln!("Starting phyl-bridge-signal...");
+        let child = Command::new(&bin)
+            .spawn()
+            .context("failed to start phyl-bridge-signal")?;
+        children.push(("phyl-bridge-signal", child));
     }
 
     eprintln!("All services started. Press Ctrl-C to stop.");
@@ -129,7 +124,7 @@ pub async fn run_all() -> Result<(), String> {
     // Wait for Ctrl-C
     tokio::signal::ctrl_c()
         .await
-        .map_err(|e| format!("signal handler failed: {e}"))?;
+        .context("signal handler failed")?;
 
     eprintln!("\nStopping all services...");
 
@@ -158,22 +153,22 @@ pub async fn run_all() -> Result<(), String> {
 
 fn find_binary(name: &str) -> Option<String> {
     // Check same directory as current executable
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Some(candidate.to_string_lossy().to_string());
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
         }
     }
 
     // Check $PATH
-    if let Ok(output) = Command::new("which").arg(name).output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(path);
-            }
+    if let Ok(output) = Command::new("which").arg(name).output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Some(path);
         }
     }
 

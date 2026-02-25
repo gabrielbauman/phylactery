@@ -144,11 +144,11 @@ async fn main() {
         }
     };
 
-    // Set socket permissions to 0700 (owner-only access).
+    // Set socket permissions to owner-only (rw for owner, no access for others).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o700);
+        let perms = std::fs::Permissions::from_mode(0o600);
         if let Err(e) = std::fs::set_permissions(&socket_path, perms) {
             eprintln!("phylactd: warning: failed to set socket permissions: {e}");
         }
@@ -230,7 +230,7 @@ fn read_config(home: &std::path::Path) -> Config {
 /// Re-adopt running processes, mark dead ones as crashed.
 fn recover_sessions(state: &AppState) {
     let home = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.home.clone()
     };
     let sessions_dir = home.join("sessions");
@@ -312,7 +312,11 @@ fn recover_sessions(state: &AppState) {
             summary,
         };
 
-        state.lock().unwrap().sessions.insert(session_id, tracked);
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sessions
+            .insert(session_id, tracked);
     }
 }
 
@@ -330,7 +334,7 @@ async fn reaper_loop(state: AppState) {
 
 /// Check all running sessions; update status for finished processes.
 fn reap_sessions(state: &AppState) {
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
     let ids: Vec<Uuid> = s
         .sessions
         .iter()
@@ -394,7 +398,7 @@ fn reap_sessions(state: &AppState) {
 
 /// GET /health
 async fn handle_health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let active = s
         .sessions
         .values()
@@ -413,7 +417,7 @@ async fn handle_create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<CreateSessionResponse>), (StatusCode, String)> {
     let (home, config, running_count) = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         let running = s
             .sessions
             .values()
@@ -469,7 +473,11 @@ async fn handle_create_session(
         summary: None,
     };
 
-    state.lock().unwrap().sessions.insert(session_id, tracked);
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sessions
+        .insert(session_id, tracked);
 
     eprintln!("phylactd: started session {session_id} (pid {pid})");
 
@@ -484,7 +492,7 @@ async fn handle_create_session(
 
 /// GET /sessions — list all sessions.
 async fn handle_list_sessions(State(state): State<AppState>) -> Json<Vec<SessionInfo>> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let mut sessions: Vec<SessionInfo> = s
         .sessions
         .values()
@@ -505,7 +513,7 @@ async fn handle_get_session(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<SessionDetail>, (StatusCode, String)> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let tracked = s
         .sessions
         .get(&id)
@@ -532,40 +540,53 @@ async fn handle_delete_session(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let mut s = state.lock().unwrap();
-    let tracked = s
-        .sessions
-        .get_mut(&id)
-        .ok_or((StatusCode::NOT_FOUND, format!("Session {id} not found")))?;
+    // First pass: validate and send SIGTERM/kill, then drop the lock.
+    let needs_sigkill = {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        let tracked = s
+            .sessions
+            .get_mut(&id)
+            .ok_or((StatusCode::NOT_FOUND, format!("Session {id} not found")))?;
 
-    if tracked.status != SessionStatus::Running {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("Session {id} is not running (status: {:?})", tracked.status),
-        ));
+        if tracked.status != SessionStatus::Running {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("Session {id} is not running (status: {:?})", tracked.status),
+            ));
+        }
+
+        // Kill the process.
+        if let Some(ref mut child) = tracked.child {
+            if let Err(e) = child.kill() {
+                eprintln!("phylactd: failed to kill child for {id}: {e}");
+            }
+            let _ = child.wait();
+            None // No follow-up needed.
+        } else {
+            // Re-adopted session: send SIGTERM first.
+            unsafe {
+                libc::kill(tracked.pid as libc::pid_t, libc::SIGTERM);
+            }
+            Some(tracked.pid) // Need follow-up SIGKILL.
+        }
+    }; // Lock dropped here.
+
+    // If we need to escalate to SIGKILL, wait asynchronously (don't block the runtime).
+    if let Some(pid) = needs_sigkill {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
     }
 
-    // Kill the process.
-    if let Some(ref mut child) = tracked.child {
-        if let Err(e) = child.kill() {
-            eprintln!("phylactd: failed to kill child for {id}: {e}");
-        }
-        // Wait to reap the zombie.
-        let _ = child.wait();
-    } else {
-        // Re-adopted session: kill by PID.
-        unsafe {
-            libc::kill(tracked.pid as libc::pid_t, libc::SIGTERM);
-        }
-        // Give it a moment, then SIGKILL.
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        unsafe {
-            libc::kill(tracked.pid as libc::pid_t, libc::SIGKILL);
+    // Second pass: update status.
+    {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tracked) = s.sessions.get_mut(&id) {
+            tracked.status = SessionStatus::Done;
+            tracked.summary = Some("Killed by user".to_string());
         }
     }
-
-    tracked.status = SessionStatus::Done;
-    tracked.summary = Some("Killed by user".to_string());
 
     eprintln!("phylactd: killed session {id}");
 
@@ -578,17 +599,14 @@ async fn handle_inject_event(
     Path(id): Path<Uuid>,
     Json(req): Json<InjectEventRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let tracked = s
         .sessions
         .get(&id)
         .ok_or((StatusCode::NOT_FOUND, format!("Session {id} not found")))?;
 
     if tracked.status != SessionStatus::Running {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("Session {id} is not running"),
-        ));
+        return Err((StatusCode::CONFLICT, format!("Session {id} is not running")));
     }
 
     let fifo_path = tracked.session_dir.join("events");
@@ -622,7 +640,7 @@ async fn handle_feed(
 
         loop {
             let sessions: Vec<(Uuid, PathBuf, SessionStatus)> = {
-                let s = state.lock().unwrap();
+                let s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.sessions
                     .values()
                     .map(|t| (t.id, t.session_dir.clone(), t.status.clone()))
@@ -674,7 +692,11 @@ async fn handle_feed(
 // ---------------------------------------------------------------------------
 
 /// Spawn a phyl-run process for a new session.
-fn spawn_session(session_dir: &std::path::Path, prompt: &str, home: &std::path::Path) -> Result<Child, String> {
+fn spawn_session(
+    session_dir: &std::path::Path,
+    prompt: &str,
+    home: &std::path::Path,
+) -> Result<Child, String> {
     // Find phyl-run binary. Prefer $PATH, then same directory as phylactd.
     let phyl_run = find_binary("phyl-run")?;
 
@@ -696,22 +718,22 @@ fn spawn_session(session_dir: &std::path::Path, prompt: &str, home: &std::path::
 /// Find a binary by name: check $PATH, then the directory of the current executable.
 fn find_binary(name: &str) -> Result<String, String> {
     // Check if it's on PATH using `which`.
-    if let Ok(output) = Command::new("which").arg(name).output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(path);
-            }
+    if let Ok(output) = Command::new("which").arg(name).output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(path);
         }
     }
 
     // Check same directory as current executable.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Ok(candidate.to_string_lossy().to_string());
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Ok(candidate.to_string_lossy().to_string());
         }
     }
 
@@ -879,10 +901,10 @@ fn read_session_prompt(session_dir: &std::path::Path) -> Option<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
-            if entry.entry_type == LogEntryType::User {
-                return entry.content;
-            }
+        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line)
+            && entry.entry_type == LogEntryType::User
+        {
+            return entry.content;
         }
     }
     None
@@ -902,10 +924,10 @@ fn read_session_summary(session_dir: &std::path::Path) -> Option<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
-            if entry.entry_type == LogEntryType::Done {
-                return entry.summary.or(entry.content);
-            }
+        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line)
+            && entry.entry_type == LogEntryType::Done
+        {
+            return entry.summary.or(entry.content);
         }
     }
     None

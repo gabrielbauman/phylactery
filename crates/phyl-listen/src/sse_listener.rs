@@ -42,10 +42,7 @@ pub async fn run_sse_listener(
                 backoff = Duration::from_secs(5);
             }
             Err(e) => {
-                eprintln!(
-                    "phyl-listen: [{}] connection error: {e}",
-                    config.name
-                );
+                eprintln!("phyl-listen: [{}] connection error: {e}", config.name);
             }
         }
 
@@ -85,14 +82,13 @@ async fn connect_and_stream(
         .parse::<hyper::Uri>()
         .map_err(|e| format!("invalid URL: {e}"))?;
 
-    let host = parsed_url
-        .host()
-        .ok_or("URL has no host")?
-        .to_string();
-    let port = parsed_url.port_u16().unwrap_or(match parsed_url.scheme_str() {
-        Some("https") => 443,
-        _ => 80,
-    });
+    let host = parsed_url.host().ok_or("URL has no host")?.to_string();
+    let port = parsed_url
+        .port_u16()
+        .unwrap_or(match parsed_url.scheme_str() {
+            Some("https") => 443,
+            _ => 80,
+        });
 
     let stream = tokio::time::timeout(
         Duration::from_secs(30),
@@ -156,6 +152,7 @@ async fn connect_and_stream(
     let mut current_id: Option<String> = None;
     let mut last_id: Option<String> = None;
     let mut buffer = String::new();
+    const MAX_BUFFER_SIZE: usize = 1_048_576; // 1 MB maximum buffer
 
     let stale_timeout = Duration::from_secs(300);
     let mut last_activity = tokio::time::Instant::now();
@@ -168,6 +165,18 @@ async fn connect_and_stream(
                         if let Ok(data) = frame.into_data() {
                             last_activity = tokio::time::Instant::now();
                             buffer.push_str(&String::from_utf8_lossy(&data));
+
+                            // Guard against unbounded buffer growth from a
+                            // misbehaving server sending data without newlines.
+                            if buffer.len() > MAX_BUFFER_SIZE {
+                                eprintln!("phyl-listen: [{}] SSE buffer exceeded {} bytes, resetting",
+                                    config.name, MAX_BUFFER_SIZE);
+                                buffer.clear();
+                                current_event_type.clear();
+                                current_data.clear();
+                                current_id = None;
+                                continue;
+                            }
 
                             while let Some(newline_pos) = buffer.find('\n') {
                                 let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
@@ -245,10 +254,10 @@ async fn process_sse_event(
         return;
     }
 
-    if let Some(id) = event_id {
-        if dedup_cache.is_duplicate(id) {
-            return;
-        }
+    if let Some(id) = event_id
+        && dedup_cache.is_duplicate(id)
+    {
+        return;
     }
 
     if !rate_limiter.check(&config.name, config.rate_limit) {
@@ -278,10 +287,7 @@ async fn process_sse_event(
 
     match daemon_client::create_session(socket, &session_prompt).await {
         Ok(id) => {
-            eprintln!(
-                "phyl-listen: [{}] session created: {id}",
-                config.name
-            );
+            eprintln!("phyl-listen: [{}] session created: {id}", config.name);
         }
         Err(e) => {
             eprintln!(

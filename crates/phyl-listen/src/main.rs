@@ -6,10 +6,10 @@
 //! All create sessions via the daemon API.
 
 mod daemon_client;
-mod rate_limit;
-mod webhook;
-mod sse_listener;
 mod file_watch;
+mod rate_limit;
+mod sse_listener;
+mod webhook;
 
 use phyl_core::Config;
 use std::path::Path;
@@ -144,7 +144,9 @@ fn load_secrets_env(path: &Path) {
                 let value = value.trim();
                 if !key.is_empty() {
                     // SAFETY: We load secrets at startup before spawning threads.
-                    unsafe { std::env::set_var(key, value); }
+                    unsafe {
+                        std::env::set_var(key, value);
+                    }
                 }
             }
         }
@@ -159,7 +161,12 @@ pub fn expand_env(s: &str) -> String {
         if let Some(end) = result[start..].find('}') {
             let var_name = &result[start + 2..start + end];
             let value = std::env::var(var_name).unwrap_or_default();
-            result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                value,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
@@ -172,9 +179,7 @@ pub fn expand_env(s: &str) -> String {
         if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] != b'{' {
             let start = i + 1;
             let mut end = start;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
-            {
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
             }
             if end > start {

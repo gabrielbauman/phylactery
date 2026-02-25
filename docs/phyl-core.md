@@ -35,14 +35,14 @@ All serializable types used across process boundaries:
 ### Session
 
 - `SessionStatus` -- Running, Done, Crashed, TimedOut
-- `SessionInfo` -- id + status + prompt + summary + timestamps
+- `SessionInfo` -- id + status + created_at + optional summary
 
 ### Configuration
 
 - `Config` -- top-level config.toml structure
 - `DaemonConfig` -- socket path
-- `SessionConfig` -- max_concurrent, timeout, model adapter, retries, context window
-- `ModelConfig` -- adapter binary name
+- `SessionConfig` -- max_concurrent, timeout_minutes, model adapter
+- `ModelConfig` -- context_window, compress_at
 - `GitConfig` -- auto_commit flag
 - `McpServerConfig` -- MCP server definitions
 - `PollConfig` -- poll rule definitions
@@ -51,7 +51,7 @@ All serializable types used across process boundaries:
 
 ### Home Directory
 
-- `phylactery_home()` -- resolves `$PHYLACTERY_HOME` with XDG fallback
+- `home_dir()` -- resolves `$PHYLACTERY_HOME`, falls back to `~/.phylactery`
 
 ## Conventions
 
@@ -66,7 +66,7 @@ All serializable types used across process boundaries:
 |---------|---------|
 | Context window | 200,000 tokens |
 | Compress at | 80% of context window |
-| Session timeout | 3,600 seconds (1 hour) |
+| Session timeout | 60 minutes (1 hour) |
 | Max concurrent sessions | 4 |
 | Model adapter | `phyl-model-claude` |
 | Socket path | `$XDG_RUNTIME_DIR/phylactery.sock` |
