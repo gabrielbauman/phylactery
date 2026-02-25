@@ -27,11 +27,12 @@ A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the 
 - **phyl-core** — Shared types library. All protocol types live here. Every other crate depends on it.
 - **phyl** — CLI client. Currently only `phyl init` is implemented. Future subcommands talk to the daemon over a Unix socket.
 - **phylactd** — Daemon (stub). Will manage sessions and serve a REST API on a Unix socket.
-- **phyl-run** — Session runner (stub). The agentic loop: invoke model, dispatch tools, write logs.
-- **phyl-model-claude** — Model adapter (stub). Translates between phylactery's JSON format and the `claude` CLI.
+- **phyl-run** — Session runner. The agentic loop: discover tools, invoke model adapter, dispatch tool calls (oneshot in parallel, server-mode via NDJSON), manage FIFO events, write `log.jsonl`, finalize SOUL.md with reflection. Invoked as `phyl-run --session-dir <path> --prompt <text>`.
+- **phyl-model-claude** — Model adapter. Translates between phylactery's JSON format and the `claude` CLI. Reads `ModelRequest` from stdin, writes `ModelResponse` to stdout.
 - **phyl-tool-bash** — One-shot bash tool. Executes shell commands in `$PHYLACTERY_SESSION_DIR/scratch/` with timeout enforcement. Supports `--spec` for discovery.
 - **phyl-tool-files** — One-shot file tool. Provides `read_file`, `write_file`, and `search_files` operations. Returns an array of `ToolSpec` from `--spec`. Supports `--spec` for discovery.
-- **phyl-tool-session**, **phyl-tool-mcp** — Server-mode tools (stubs). Long-lived, NDJSON on stdin/stdout.
+- **phyl-tool-session** — Server-mode tool. Provides `ask_human` (blocks for human response) and `done` (signals `end_session`). NDJSON on stdin/stdout. Supports `--spec` and `--serve`.
+- **phyl-tool-mcp** — MCP bridge tool (stub). Server-mode, NDJSON on stdin/stdout.
 - **phyl-bridge-signal** — Signal Messenger bridge (stub).
 
 ## Key Protocols
@@ -45,7 +46,7 @@ All inter-process communication is JSON on stdin/stdout. The types in `phyl-core
 
 ## Conventions
 
-- Rust edition 2024. Common dependencies (`serde`, `serde_json`, `chrono`, `uuid`) are declared as workspace dependencies in the root `Cargo.toml`.
+- Rust edition 2024. Common dependencies (`serde`, `serde_json`, `chrono`, `uuid`, `toml`, `libc`) are declared as workspace dependencies in the root `Cargo.toml`.
 - All serializable types derive `Serialize`/`Deserialize`. Enums use `#[serde(rename_all = "snake_case")]`. Optional fields use `skip_serializing_if`.
 - Errors are returned as `Result<(), String>` in the current simple code. This will likely evolve to proper error types.
 - Binaries log to stderr. Session conversation logs go to `log.jsonl` files.
