@@ -59,7 +59,7 @@ Phylactery uses a deliberate two-repo model:
 
 ## Process Architecture
 
-There is no monolith. Instead, there are 12 crates that build into one library and eleven binaries:
+There is no monolith. Instead, there are 13 crates that build into one library and twelve binaries:
 
 | Binary | Role |
 |--------|------|
@@ -67,6 +67,7 @@ There is no monolith. Instead, there are 12 crates that build into one library a
 | `phyl` | CLI client. Thin wrapper over HTTP-to-Unix-socket. |
 | `phyl-run` | Session runner. The agentic loop. One per session. |
 | `phyl-model-claude` | Model adapter for the Claude CLI. |
+| `phyl-model-openai` | Model adapter for OpenAI-compatible APIs (Ollama, llama.cpp, vLLM, etc.). |
 | `phyl-tool-bash` | Tool: execute shell commands. |
 | `phyl-tool-files` | Tool: read/write/search files. |
 | `phyl-tool-session` | Tool (server mode): human interaction + session control. |
@@ -111,7 +112,7 @@ A typical running system looks like this:
 systemd (or phyl start --all)
   ├── phylactd              (always running, manages sessions)
   │   ├── phyl-run          (one per active session)
-  │   │   ├── phyl-model-claude   (child of session runner)
+  │   │   ├── phyl-model-*        (model adapter: claude, openai, or custom)
   │   │   ├── phyl-tool-mcp       (server-mode, lifetime of session)
   │   │   └── phyl-tool-session   (server-mode, lifetime of session)
   │   └── phyl-run          (another session...)

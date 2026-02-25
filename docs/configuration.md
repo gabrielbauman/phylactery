@@ -22,6 +22,25 @@ timeout_minutes = 60       # session timeout in minutes (default: 60)
 model = "phyl-model-claude"  # model adapter binary
 ```
 
+To use a local model instead of Claude, switch to the OpenAI-compatible adapter:
+
+```toml
+[session]
+model = "phyl-model-openai"
+
+[model]
+context_window = 8192      # match your local model's context length
+```
+
+Then set environment variables for the adapter (e.g., in `secrets.env` or your shell):
+
+```
+PHYL_OPENAI_URL=http://localhost:11434/v1
+PHYL_OPENAI_MODEL=gemma3:4b
+```
+
+See [phyl-model-openai](phyl-model-openai.md) for full details.
+
 ### Git Settings
 
 ```toml
