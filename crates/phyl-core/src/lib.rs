@@ -507,17 +507,40 @@ pub struct SessionInfo {
 
 /// Returns the path to the agent's home directory.
 ///
-/// Uses `$PHYLACTERY_HOME` if set, otherwise defaults to `~/.phylactery`.
+/// Resolution order:
+/// 1. `$PHYLACTERY_HOME` if set
+/// 2. `$XDG_DATA_HOME/phylactery` (typically `~/.local/share/phylactery`)
+/// 3. `~/.phylactery` (legacy path, still supported)
+/// 4. `/tmp/.phylactery` (fallback when `$HOME` is unset)
 pub fn home_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("PHYLACTERY_HOME") {
-        std::path::PathBuf::from(dir)
-    } else {
-        dirs_or_default()
+        return std::path::PathBuf::from(dir);
     }
-}
 
-fn dirs_or_default() -> std::path::PathBuf {
-    std::env::var("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".phylactery"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.phylactery"))
+    // Try XDG data directory first.
+    let xdg_path = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        Some(std::path::PathBuf::from(xdg).join("phylactery"))
+    } else if let Ok(home) = std::env::var("HOME") {
+        Some(std::path::PathBuf::from(home).join(".local/share/phylactery"))
+    } else {
+        None
+    };
+
+    if let Some(ref xdg) = xdg_path {
+        if xdg.exists() {
+            return xdg.clone();
+        }
+    }
+
+    // Legacy path.
+    if let Ok(home) = std::env::var("HOME") {
+        let legacy = std::path::PathBuf::from(&home).join(".phylactery");
+        if legacy.exists() {
+            return legacy;
+        }
+        // Neither exists yet — prefer XDG for new installations.
+        return xdg_path.unwrap_or_else(|| std::path::PathBuf::from(home).join(".phylactery"));
+    }
+
+    std::path::PathBuf::from("/tmp/.phylactery")
 }
