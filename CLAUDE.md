@@ -22,7 +22,7 @@ A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the 
 
 ## Architecture
 
-11 crates in a Cargo workspace under `crates/`. One shared library, ten binaries:
+12 crates in a Cargo workspace under `crates/`. One shared library, eleven binaries:
 
 - **phyl-core** — Shared types library. All protocol types live here. Every other crate depends on it.
 - **phyl** — CLI client. Subcommands: `init`, `start [-d]`, `session [-d] "prompt"`, `ls`, `status <id>`, `say <id> "msg"`, `log <id>`, `stop <id>`, `watch`. Talks to the daemon over a Unix socket using hyper HTTP/1.1 client.
@@ -35,6 +35,7 @@ A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the 
 - **phyl-tool-mcp** — MCP bridge tool. Server-mode, NDJSON on stdin/stdout. Bridges to external MCP servers configured in `config.toml` (`[[mcp]]` sections). Implements MCP JSON-RPC 2.0 client protocol (initialize, tools/list, tools/call). Prefixes tool names with server name (e.g., `filesystem_read_file`). Supports `--spec`, `--serve`, and `--call <server> <tool> <args>` (one-shot CLI mode for use outside sessions, e.g. from `phyl-poll`).
 - **phyl-bridge-signal** — Signal Messenger bridge. Connects to daemon's `GET /feed` SSE stream, forwards questions/done/errors as Signal messages to the owner. Listens for inbound Signal messages from the owner and routes replies to pending questions or creates new sessions. Uses `signal-cli` for Signal protocol. Configured via `[bridge.signal]` in `config.toml`.
 - **phyl-poll** — Poller. Runs commands on configurable intervals, compares output to previous results, and starts sessions via the daemon API when changes are detected. Configured via `[[poll]]` sections in `config.toml`. State files stored in `$PHYLACTERY_HOME/poll/`. Turns any CLI tool into an event source for the agent.
+- **phyl-listen** — Incoming event listener. Receives webhooks (HTTP POST) on a TCP port and creates sessions via the daemon API. Configured via `[listen]` and `[[listen.hook]]` sections in `config.toml`. Supports HMAC-SHA256 webhook secret verification, rate limiting, and deduplication. Default bind `127.0.0.1:7890`.
 
 ## Key Protocols
 

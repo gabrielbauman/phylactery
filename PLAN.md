@@ -175,6 +175,7 @@ it through LAW.md (rules) or JOB.md (role), not by editing SOUL.md directly.
 | `phyl-tool-mcp` | Tool (server mode): bridge to any MCP server. | Rust |
 | `phyl-bridge-signal` | Bridge: two-way Signal Messenger interface. | Rust |
 | `phyl-poll` | Poller: run commands on intervals, start sessions on change. | Rust |
+| `phyl-listen` | Listener: receive webhooks/SSE, start sessions on events. | Rust |
 
 Each tool and model adapter is a standalone executable. They can be written in
 any language. The contract is JSON on stdin/stdout.
@@ -662,6 +663,176 @@ it's a normal session.
 - Session creation fails (e.g., max concurrent): log warning, retry on next
   change detection
 
+### Listening: `phyl-listen`
+
+A Rust binary in the workspace. The push complement to `phyl-poll`. Where
+polling pulls data on intervals, listening receives events pushed by external
+systems — webhooks from GitHub, CI/CD notifications, monitoring alerts,
+or any service that can make an HTTP request or emit SSE events.
+
+`phyl-listen` is a long-lived process (like bridges and the poller). It reads
+`[listen]` and `[[listen.hook]]` sections from `config.toml`, opens an HTTP
+server on a configurable TCP port, and routes incoming requests to session
+creation via `POST /sessions` on the daemon API.
+
+**Why a separate binary?** The daemon deliberately listens only on a Unix
+socket — no network exposure by design. A webhook receiver must listen on a
+TCP port (external systems need to reach it). Putting this in the daemon would
+change its security model. A separate binary can crash/restart independently,
+can be omitted entirely if not needed, and follows the project's pattern of
+small cooperating processes.
+
+**Example configuration** (in `config.toml`):
+
+```toml
+[listen]
+bind = "127.0.0.1:7890"            # TCP address for webhook receiver
+# bind = "0.0.0.0:7890"            # Expose to network (use with caution)
+
+[[listen.hook]]
+name = "github"
+path = "/hook/github"
+secret = "$GITHUB_WEBHOOK_SECRET"   # HMAC-SHA256 verification
+prompt = "A GitHub event arrived. Analyze it and take appropriate action."
+# Optional: only trigger on specific header values
+filter_header = "X-GitHub-Event"
+filter_values = ["push", "pull_request", "issues"]
+
+[[listen.hook]]
+name = "ci-pipeline"
+path = "/hook/ci"
+secret = "$CI_WEBHOOK_TOKEN"
+prompt = "A CI build notification arrived. Check if anything needs attention."
+
+[[listen.hook]]
+name = "monitoring"
+path = "/hook/alerts"
+prompt = "A monitoring alert fired. Investigate and report what you find."
+```
+
+**How it works:**
+
+1. On startup, read `[listen]` config from `config.toml`
+2. Bind HTTP server to `listen.bind` address (default `127.0.0.1:7890`)
+3. Register routes for each `[[listen.hook]]` — one path per hook
+4. On incoming POST:
+   a. Match path to a configured hook (404 if no match)
+   b. Verify webhook secret if configured (HMAC-SHA256 of body against
+      `X-Hub-Signature-256` or similar header; 401 if invalid)
+   c. Check rate limit for this hook (reject with 429 if exceeded)
+   d. Check deduplication window (skip if duplicate delivery ID seen recently)
+   e. Assemble session prompt from the hook's template + request payload
+   f. POST /sessions to the daemon API
+   g. Return 202 Accepted with the session ID
+
+**Prompt assembly:**
+
+```
+{hook.prompt}
+
+=== EVENT ===
+Source: {hook.name} (POST {hook.path})
+Received: {timestamp}
+Headers:
+  X-GitHub-Event: push
+  X-GitHub-Delivery: abc123
+
+=== PAYLOAD ===
+{request body}
+```
+
+The model gets the hook's configured prompt (the instruction), relevant
+headers, and the full request body. Headers are filtered to those likely
+useful (event type, delivery ID, content type) — not the full HTTP header
+set.
+
+**Webhook secret verification:**
+
+When `secret` is configured, the listener validates the request body against
+an HMAC signature header. Supports the common patterns:
+
+- GitHub: `X-Hub-Signature-256` header, HMAC-SHA256
+- GitLab: `X-Gitlab-Token` header, direct comparison
+- Generic: configurable header name + HMAC-SHA256
+
+Unsigned requests to a secret-protected hook are rejected with 401.
+
+**Rate limiting:**
+
+Each hook has an independent rate limit to prevent webhook floods from
+creating unlimited sessions. Default: 10 sessions per minute per hook.
+Configurable per hook:
+
+```toml
+[[listen.hook]]
+name = "noisy-service"
+path = "/hook/noisy"
+rate_limit = 3                     # max sessions per minute
+prompt = "..."
+```
+
+When the rate limit is hit, the listener returns 429 Too Many Requests.
+Events are dropped, not queued — webhooks are retried by the sender anyway.
+
+**Deduplication:**
+
+Webhooks are often retried by the sender on timeout. The listener tracks
+delivery IDs (from `X-GitHub-Delivery`, `X-Request-Id`, or similar headers)
+in a short-lived cache (5 minutes). Duplicate deliveries are acknowledged
+with 200 but don't create sessions. The deduplication header is configurable:
+
+```toml
+[[listen.hook]]
+name = "github"
+dedup_header = "X-GitHub-Delivery"  # default: X-Request-Id
+```
+
+**Security model:**
+
+- Default bind is `127.0.0.1` (localhost only) — not exposed to the network
+  unless explicitly configured
+- Only configured paths accept requests (everything else → 404)
+- Webhook secret verification (HMAC-SHA256) for authenticated sources
+- Rate limiting prevents session floods
+- Payload size limit (1 MB default, configurable) prevents abuse
+- No path traversal, no query parameters interpreted, no redirects
+
+**Future listener types:**
+
+The `phyl-listen` binary is designed to host multiple listener types beyond
+webhooks. Future additions would be configured alongside hooks:
+
+```toml
+# Subscribe to an external SSE stream (future)
+[[listen.sse]]
+name = "deploy-events"
+url = "https://internal.example.com/events"
+prompt = "A deployment event occurred. Check system health."
+
+# Watch a local directory for new files (future)
+[[listen.watch]]
+name = "inbox"
+path = "/home/user/agent-inbox/"
+events = ["create"]
+prompt = "A new file appeared in the inbox. Process it."
+```
+
+These would follow the same pattern: receive event → assemble prompt → create
+session. The webhook receiver is the initial implementation because webhooks
+are the most universal push mechanism — every CI system, code forge,
+monitoring tool, and SaaS product supports them.
+
+**The trifecta of event sources:**
+
+| Mechanism | Binary | Direction | Trigger |
+|-----------|--------|-----------|---------|
+| Polling | `phyl-poll` | Pull (agent → world) | Output changed since last check |
+| Listening | `phyl-listen` | Push (world → agent) | External system sends event |
+| Bridges | `phyl-bridge-*` | Bidirectional | Human sends message |
+
+All three create sessions via `POST /sessions` on the daemon API. The daemon
+doesn't need to know how a session was created — it just runs them.
+
 ### The `ask_human` Tool
 
 Provided by `phyl-tool-session` (server mode). When the model needs human
@@ -793,7 +964,13 @@ phylactery/                     # Code repo — you're looking at it
 │   ├── phyl-tool-mcp/          # MCP bridge tool (server mode)
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs
-│   └── phyl-bridge-signal/     # Signal Messenger bridge
+│   ├── phyl-bridge-signal/     # Signal Messenger bridge
+│   │   ├── Cargo.toml
+│   │   └── src/main.rs
+│   ├── phyl-poll/              # Poller (command-based event source)
+│   │   ├── Cargo.toml
+│   │   └── src/main.rs
+│   └── phyl-listen/            # Listener (webhooks, incoming events)
 │       ├── Cargo.toml
 │       └── src/main.rs
 └── README.md
@@ -890,6 +1067,22 @@ args = ["-sf", "https://example.com/health"]
 interval = 60
 prompt = "The health check output changed. Analyze what's different."
 # timeout = 10                      # Optional: command timeout in seconds (default 30)
+
+# Incoming event listeners (used by phyl-listen)
+[listen]
+bind = "127.0.0.1:7890"            # TCP address for webhook receiver
+
+[[listen.hook]]
+name = "github"
+path = "/hook/github"
+secret = "$GITHUB_WEBHOOK_SECRET"   # HMAC-SHA256 verification
+prompt = "A GitHub event arrived. Analyze it and take appropriate action."
+
+[[listen.hook]]
+name = "ci-pipeline"
+path = "/hook/ci"
+secret = "$CI_WEBHOOK_TOKEN"
+prompt = "A CI build notification arrived. Check if anything needs attention."
 ```
 
 Tools are discovered from `$PATH` — any executable named `phyl-tool-*` is a
@@ -1136,6 +1329,52 @@ into an event source for the agent.
 - [ ] Unit tests: config parsing, diff generation, prompt assembly, state
       file read/write, interval scheduling
 - [ ] Test: configure a poll rule, verify session creation on change
+
+### Phase 12: Incoming Event Listener
+
+The push complement to polling. External systems send events to the agent via
+webhooks (HTTP POST), and the listener creates sessions to handle them. This
+is how the agent reacts to GitHub events, CI/CD notifications, monitoring
+alerts, or anything that can make an HTTP request.
+
+- [ ] Implement `phyl-listen`:
+      - Standalone binary, long-lived process alongside daemon and poller.
+      - Read `[listen]` and `[[listen.hook]]` configs from
+        `$PHYLACTERY_HOME/config.toml`
+      - Bind HTTP server to `listen.bind` address (default
+        `127.0.0.1:7890`) using `axum` + `tokio`
+      - Register one route per `[[listen.hook]]` based on configured `path`
+      - On incoming POST to a configured path:
+        - Verify webhook secret (HMAC-SHA256) if `secret` is configured
+        - Check rate limit (default 10 sessions/minute per hook)
+        - Check deduplication cache (skip duplicate delivery IDs)
+        - Apply header filter if configured (reject non-matching events)
+        - Assemble session prompt from hook template + request payload
+        - POST /sessions to daemon API (via Unix socket, same client as CLI)
+        - Return 202 Accepted with session ID
+      - Return 404 for unconfigured paths, 401 for bad signatures, 429 for
+        rate limit exceeded
+      - Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`)
+      - Log activity to stderr
+- [ ] Config types: `ListenConfig` with `bind`, `ListenHookConfig` with
+      `name`, `path`, `prompt`, optional `secret`, `filter_header`,
+      `filter_values`, `rate_limit`, `dedup_header`, `max_body_size`
+- [ ] Webhook secret verification: HMAC-SHA256 against
+      `X-Hub-Signature-256` (GitHub-style), with configurable header name
+      for other providers. Environment variable expansion in `secret` field.
+- [ ] Prompt assembly: session prompt includes the hook's `prompt` template,
+      source info (hook name, path, timestamp), relevant headers, and the
+      full request body
+- [ ] Rate limiting: in-memory sliding window per hook. Default 10/minute.
+      Returns 429 when exceeded.
+- [ ] Deduplication: in-memory cache of delivery IDs (from configurable
+      header, default `X-Request-Id`). 5-minute TTL. Duplicate deliveries
+      acknowledged with 200 but don't create sessions.
+- [ ] Payload size limit: 1 MB default, configurable per hook
+- [ ] Add `phyl-listen` to workspace `Cargo.toml`
+- [ ] Unit tests: config parsing, HMAC verification, rate limiting,
+      deduplication, prompt assembly, route matching, header filtering
+- [ ] Test: configure a webhook hook, POST to it, verify session creation
 
 ---
 
