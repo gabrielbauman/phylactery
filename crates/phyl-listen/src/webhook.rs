@@ -76,11 +76,11 @@ async fn handle_webhook(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("/");
 
-    // Find hooks matching this path
+    // Find hooks matching this path (exact match only to prevent prefix attacks).
     let matching_hooks: Vec<&ListenHookConfig> = state
         .hooks
         .iter()
-        .filter(|h| uri_path.starts_with(&h.path) || h.path == uri_path)
+        .filter(|h| uri_path == h.path || uri_path.strip_suffix('/') == Some(&h.path))
         .collect();
 
     if matching_hooks.is_empty() {
