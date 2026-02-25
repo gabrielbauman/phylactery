@@ -144,11 +144,11 @@ async fn main() {
         }
     };
 
-    // Set socket permissions to 0700 (owner-only access).
+    // Set socket permissions to owner-only (rw for owner, no access for others).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o700);
+        let perms = std::fs::Permissions::from_mode(0o600);
         if let Err(e) = std::fs::set_permissions(&socket_path, perms) {
             eprintln!("phylactd: warning: failed to set socket permissions: {e}");
         }
