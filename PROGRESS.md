@@ -43,19 +43,58 @@ Tracking implementation status against the [plan](PLAN.md).
 - [x] Test from command line:
       `echo '{"messages":[{"role":"user","content":"say hi"}],"tools":[]}' | phyl-model-claude`
 
-## Phase 4: Session Runner
+## Phase 4: Session Runner — **Complete**
 
-- [ ] Implement `phyl-run`:
-      - Parse args (session dir, prompt)
-      - Discover tools from path
-      - Build system prompt from LAW.md + JOB.md + SOUL.md + knowledge/INDEX.md
-      - Start server-mode tools
-      - Run the agentic loop
-      - Write to log.jsonl
-      - Finalization step: SOUL.md reflection + done
-      - PID file for daemon crash recovery
-- [ ] Create FIFO, read events from it
-- [ ] Test: `mkdir -p sessions/test && phyl-run --session-dir sessions/test --prompt "what is 2+2"`
+- [x] Implement `phyl-run`:
+      - Parse args (`--session-dir`, `--prompt`)
+      - Redirect stderr to `sessions/<uuid>/stderr.log` (via `dup2`)
+      - Write PID file to `sessions/<uuid>/pid`
+      - Read `config.toml` (with defaults if missing)
+      - Read LAW.md, JOB.md, SOUL.md, knowledge/INDEX.md
+      - Assemble system prompt from template (=== LAW/JOB/SOUL/SESSION sections)
+      - Discover tools from `$PATH` (any `phyl-tool-*` executable, `--spec`)
+      - Parse tool specs (single or array), detect oneshot vs server mode
+      - Start server-mode tools (`--serve`, keep stdin/stdout handles for NDJSON)
+      - Build tool dispatch map (name → executable + mode)
+      - Set environment variables (`PHYLACTERY_SESSION_ID`, `_SESSION_DIR`,
+        `_HOME`, `_KNOWLEDGE_DIR`)
+      - Run the agentic loop:
+        - Invoke model adapter (configurable binary, default `phyl-model-claude`)
+        - Model retry with configurable max retries on failure
+        - Append assistant messages to history, write to log.jsonl
+        - Dispatch tool calls: oneshot tools in parallel (threads), server-mode
+          via NDJSON
+        - Collect results, detect `end_session` signal from server-mode tools
+        - Implicit done: if model responds without tool calls and no FIFO
+          events after brief wait, finalize
+        - Context window management: track cumulative tokens (from `usage`
+          field or chars/4 heuristic), compress history at configurable
+          threshold by summarizing oldest messages via model adapter
+      - Finalization step:
+        - Close stdin on server-mode tools → they exit
+        - `flock` on `.soul.lock` (exclusive, serializes SOUL.md updates)
+        - Re-read SOUL.md from disk (not stale session-start version)
+        - Invoke model for reflection (with session summary + current SOUL.md)
+        - Write updated SOUL.md
+        - `flock` on `.git.lock`, `git add SOUL.md && git commit`
+        - Release locks (soul first, then git — correct lock ordering)
+        - Truncate SOUL.md if >3000 words (keep first + last thirds)
+      - Write final `done` entry to log.jsonl
+      - Cleanup: remove FIFO, remove PID file
+- [x] Create FIFO (`mkfifo`, open with `O_RDWR | O_NONBLOCK`), poll for
+      events with `poll()`, parse JSON or plain text events
+- [x] Implement `phyl-tool-session` (server mode, NDJSON):
+      - `--spec`: returns array with `ask_human` and `done` tool specs
+        (both `mode: "server"`)
+      - `--serve`: NDJSON server loop on stdin/stdout
+      - `done` handler: returns summary with `"signal":"end_session"`
+      - `ask_human` handler: blocks waiting for forwarded answer from runner,
+        handles timeout and session-end cancellation
+- [x] Unit tests (7 for phyl-run, 2 for phyl-tool-session): system prompt
+      building, session summarization, SOUL.md truncation, tool spec
+      serialization
+- [x] Test: `phyl-run --session-dir sessions/test --prompt "what is 2+2"`
+      (requires `phyl init` and model adapter on PATH)
 
 ## Phase 5: Daemon
 
@@ -79,7 +118,7 @@ Tracking implementation status against the [plan](PLAN.md).
 
 ## Phase 9: Human Attention System
 
-- [ ] Implement `phyl-tool-session` (server mode)
+- [x] Implement `phyl-tool-session` (server mode) — done in Phase 4
 - [ ] `GET /feed` SSE endpoint in daemon
 - [ ] `phyl watch` CLI command
 

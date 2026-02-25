@@ -260,7 +260,12 @@ dependencies = [
 name = "phyl-run"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "libc",
  "phyl-core",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -294,6 +299,8 @@ name = "phyl-tool-session"
 version = "0.1.0"
 dependencies = [
  "phyl-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
