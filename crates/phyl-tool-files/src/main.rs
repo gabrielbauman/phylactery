@@ -103,6 +103,82 @@ fn resolve_path(path: &str) -> PathBuf {
     }
 }
 
+/// Validate that a resolved path is within an allowed directory.
+///
+/// Allowed directories for reads:
+///   - $PHYLACTERY_SESSION_DIR/scratch/
+///   - $PHYLACTERY_HOME/ (entire home)
+///   - /usr, /lib, /bin, /etc (system read-only paths from sandbox spec)
+///
+/// Allowed directories for writes:
+///   - $PHYLACTERY_SESSION_DIR/scratch/
+///   - $PHYLACTERY_HOME/knowledge/
+fn validate_path(resolved: &Path, writable: bool) -> Result<(), String> {
+    // Canonicalize what we can — for new files, canonicalize the parent.
+    let canonical = if resolved.exists() {
+        resolved.canonicalize()
+            .map_err(|e| format!("Cannot resolve path {}: {e}", resolved.display()))?
+    } else if let Some(parent) = resolved.parent() {
+        if parent.exists() {
+            let canon_parent = parent.canonicalize()
+                .map_err(|e| format!("Cannot resolve parent {}: {e}", parent.display()))?;
+            canon_parent.join(resolved.file_name().unwrap_or_default())
+        } else {
+            resolved.to_path_buf()
+        }
+    } else {
+        resolved.to_path_buf()
+    };
+
+    let scratch = std::env::var("PHYLACTERY_SESSION_DIR")
+        .map(|d| PathBuf::from(d).join("scratch"))
+        .ok()
+        .and_then(|p| p.canonicalize().ok().or(Some(p)));
+
+    let home = std::env::var("PHYLACTERY_HOME")
+        .map(PathBuf::from)
+        .ok()
+        .and_then(|p| p.canonicalize().ok().or(Some(p)));
+
+    // Scratch is always allowed for both reads and writes.
+    if let Some(ref scratch) = scratch {
+        if canonical.starts_with(scratch) {
+            return Ok(());
+        }
+    }
+
+    if writable {
+        // Writes only allowed to scratch and knowledge/.
+        if let Some(ref home) = home {
+            let knowledge = home.join("knowledge");
+            if canonical.starts_with(&knowledge) {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "Write denied: {} is outside allowed directories (scratch/, knowledge/)",
+            resolved.display()
+        ))
+    } else {
+        // Reads allowed from home, plus system paths.
+        if let Some(ref home) = home {
+            if canonical.starts_with(home) {
+                return Ok(());
+            }
+        }
+        let system_paths = ["/usr", "/lib", "/bin", "/etc"];
+        for sys in &system_paths {
+            if canonical.starts_with(sys) {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "Read denied: {} is outside allowed directories",
+            resolved.display()
+        ))
+    }
+}
+
 /// Expand `$VAR` or `${VAR}` references in a string from the process environment.
 fn expand_env_vars(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
@@ -165,6 +241,12 @@ fn handle_read_file(arguments: &serde_json::Value) -> ToolOutput {
     };
 
     let resolved = resolve_path(path);
+    if let Err(e) = validate_path(&resolved, false) {
+        return ToolOutput {
+            output: None,
+            error: Some(e),
+        };
+    }
     match std::fs::read_to_string(&resolved) {
         Ok(contents) => ToolOutput {
             output: Some(contents),
@@ -199,6 +281,12 @@ fn handle_write_file(arguments: &serde_json::Value) -> ToolOutput {
     };
 
     let resolved = resolve_path(path);
+    if let Err(e) = validate_path(&resolved, true) {
+        return ToolOutput {
+            output: None,
+            error: Some(e),
+        };
+    }
 
     // Create parent directories if they don't exist.
     if let Some(parent) = resolved.parent() {
@@ -375,6 +463,13 @@ fn handle_search_files(arguments: &serde_json::Value) -> ToolOutput {
         .and_then(|v| v.as_str())
         .map(|p| resolve_path(p))
         .unwrap_or_else(|| resolve_path("."));
+
+    if let Err(e) = validate_path(&search_dir, false) {
+        return ToolOutput {
+            output: None,
+            error: Some(e),
+        };
+    }
 
     if !search_dir.is_dir() {
         return ToolOutput {
