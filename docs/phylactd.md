@@ -37,7 +37,7 @@ Bridges connect to this endpoint. So does `phyl watch`.
 
 ## Socket
 
-Default path: `$XDG_RUNTIME_DIR/phylactery.sock` (or `/tmp/phylactery.sock`). Configurable via `config.toml`:
+Default path: `$XDG_RUNTIME_DIR/phylactery.sock` on Linux, `$TMPDIR/phylactery.sock` on macOS, or `/tmp/phylactery.sock` as fallback. Configurable via `config.toml`:
 
 ```toml
 [daemon]

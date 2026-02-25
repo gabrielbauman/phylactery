@@ -70,7 +70,7 @@ Binaries land in `target/release/`. Put them on your `$PATH`.
 phyl init
 ```
 
-This creates the agent's home at `~/.local/share/phylactery/` with:
+This creates the agent's home at `~/.local/share/phylactery/` (Linux) or `~/Library/Application Support/phylactery/` (macOS) with:
 - `config.toml` -- configuration with sensible defaults
 - `secrets.env` -- secret storage (mode 600, gitignored)
 - `LAW.md`, `JOB.md` -- edit these to define your agent's rules and role
@@ -102,15 +102,21 @@ phyl session "What tools do you have available? List them."
 phyl start --all
 ```
 
-### Optional: Systemd
+### Optional: Service Installation
+
+On **Linux** (systemd):
 
 ```sh
-phyl init --systemd
-# or, if already initialized:
 phyl setup systemd
 ```
 
-This generates, installs, and enables systemd user units for the daemon and any configured services (poller, listener, bridge).
+On **macOS** (launchd):
+
+```sh
+phyl setup launchd
+```
+
+This generates, installs, and enables service definitions for the daemon and any configured services (poller, listener, bridge). On Linux this creates systemd user units; on macOS this creates launchd user agents in `~/Library/LaunchAgents/`.
 
 ### Optional: Add Integrations
 
@@ -175,7 +181,7 @@ Phylactery runs on your machine with your privileges. A few things to be aware o
 ## Requirements
 
 - Rust (edition 2024) for building
-- Linux (inotify for file watching; other platforms may work with reduced functionality)
+- Linux or macOS (file watching uses inotify on Linux and FSEvents on macOS via the `notify` crate)
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) for the default model adapter (or write your own)
 - [signal-cli](https://github.com/AsamK/signal-cli) if using the Signal bridge
 

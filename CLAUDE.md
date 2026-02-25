@@ -18,7 +18,7 @@ No linter or formatter is configured yet. Use `cargo clippy` and `cargo fmt` if 
 
 A personal AI agent built as cooperating Unix processes. See `docs/` for detailed documentation of each component.
 
-**Two-repo model:** This repo builds the binaries. The agent's runtime state lives in a separate git repo at `$PHYLACTERY_HOME` (default `~/.local/share/phylactery`; legacy `~/.phylactery` also supported), created by `phyl init`.
+**Two-repo model:** This repo builds the binaries. The agent's runtime state lives in a separate git repo at `$PHYLACTERY_HOME` (default `~/.local/share/phylactery` on Linux, `~/Library/Application Support/phylactery` on macOS; legacy `~/.phylactery` also supported), created by `phyl init`.
 
 ## Architecture
 

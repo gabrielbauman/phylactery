@@ -10,7 +10,8 @@ Created by `phyl init` with sensible defaults. Sections are added as you configu
 
 ```toml
 [daemon]
-socket = "/run/user/1000/phylactery.sock"  # default: $XDG_RUNTIME_DIR/phylactery.sock
+socket = "/run/user/1000/phylactery.sock"  # Linux default: $XDG_RUNTIME_DIR/phylactery.sock
+                                           # macOS default: $TMPDIR/phylactery.sock
 ```
 
 ### Session Settings

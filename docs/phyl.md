@@ -93,9 +93,9 @@ phyl start --all    # all services in foreground (no systemd needed)
 ### Initialize
 
 ```sh
-phyl init                    # default: ~/.local/share/phylactery
+phyl init                    # default: ~/.local/share/phylactery (Linux)
+                             #          ~/Library/Application Support/phylactery (macOS)
 phyl init /path/to/home      # custom location
-phyl init --systemd          # init + generate/install systemd units
 ```
 
 Creates the agent's home directory with:
@@ -107,15 +107,31 @@ Creates the agent's home directory with:
 - `poll/` (gitignored)
 - A git repo with signing disabled and a local `phylactery` identity
 
-### Systemd setup
+### Service setup
+
+On **Linux** (systemd):
 
 ```sh
 phyl setup systemd           # generate, install, enable, start units
-phyl setup status            # check health of everything
-phyl setup migrate-xdg       # move ~/.phylactery to XDG paths
 ```
 
 Systemd units include dependency ordering, restart policies, and `EnvironmentFile` for secrets.
+
+On **macOS** (launchd):
+
+```sh
+phyl setup launchd           # generate, install, load launch agents
+```
+
+Launchd plists are written to `~/Library/LaunchAgents/` with `KeepAlive` and environment variables from `secrets.env`.
+
+On either platform:
+
+```sh
+phyl setup services          # auto-detect platform, install appropriate service defs
+phyl setup status            # check health of everything
+phyl setup migrate-xdg       # move ~/.phylactery to platform-appropriate data dir
+```
 
 ## Configuration Commands
 
@@ -133,4 +149,8 @@ phyl config remove-secret OLD_KEY       # remove from secrets.env
 
 ## Socket Resolution
 
-The CLI resolves the daemon socket path from `config.toml` in `$PHYLACTERY_HOME`. Default: `$XDG_RUNTIME_DIR/phylactery.sock` or `/tmp/phylactery.sock`.
+The CLI resolves the daemon socket path from `config.toml` in `$PHYLACTERY_HOME`. Default resolution order:
+
+1. `$XDG_RUNTIME_DIR/phylactery.sock` (Linux, if set)
+2. `$TMPDIR/phylactery.sock` (macOS, per-user temp directory)
+3. `/tmp/phylactery.sock` (fallback)
