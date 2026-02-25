@@ -853,30 +853,197 @@ dedup_header = "X-GitHub-Delivery"  # default: X-Request-Id
 - Payload size limit (1 MB default, configurable) prevents abuse
 - No path traversal, no query parameters interpreted, no redirects
 
-**Future listener types:**
+**SSE subscription: `[[listen.sse]]`**
 
-The `phyl-listen` binary is designed to host multiple listener types beyond
-webhooks. Future additions would be configured alongside hooks:
+Subscribe to an external SSE stream and create sessions when events arrive.
+This is a persistent connection — the listener holds the connection open and
+reacts to each event in real time. Useful for internal APIs, deployment
+pipelines, monitoring dashboards, or any service that exposes an SSE endpoint.
 
 ```toml
-# Subscribe to an external SSE stream (future)
 [[listen.sse]]
 name = "deploy-events"
-url = "https://internal.example.com/events"
+url = "https://internal.example.com/events/stream"
 prompt = "A deployment event occurred. Check system health."
+# Optional: auth header for protected endpoints
+headers = { Authorization = "Bearer $DEPLOY_API_TOKEN" }
+# Optional: route by SSE event type (the `event:` field in SSE)
+route_event = true
+routes = { deploy_start = "A deployment started. Monitor it.", deploy_fail = "A deployment failed. Investigate immediately.", deploy_success = "A deployment succeeded. Verify health." }
+# Optional: only listen for specific SSE event types (ignore others)
+events = ["deploy_start", "deploy_fail", "deploy_success"]
 
-# Watch a local directory for new files (future)
+[[listen.sse]]
+name = "price-alerts"
+url = "https://api.example.com/prices/stream"
+prompt = "A price alert triggered. Analyze the change."
+rate_limit = 5                     # max sessions per minute
+```
+
+How SSE subscription works:
+
+1. On startup, connect to each configured `url` via HTTP GET
+2. Parse the SSE stream (standard `text/event-stream` format):
+   - `event:` field → event type (used for routing/filtering)
+   - `data:` field → event payload (can be multi-line)
+   - `id:` field → event ID (used for deduplication and reconnection)
+3. For each event:
+   a. If `events` is configured, skip events not in the list
+   b. Resolve prompt: if `route_event` is true and `routes` has a matching
+      event type, use that prompt; otherwise use the fallback `prompt`
+   c. Check rate limit (per SSE source)
+   d. Check deduplication (by SSE `id:` field, 5-minute cache)
+   e. Assemble session prompt and POST /sessions to daemon
+4. On connection drop: reconnect after 5 seconds (exponential backoff up
+   to 60 seconds). Send `Last-Event-ID` header to resume from where we
+   left off (standard SSE reconnection protocol).
+
+Prompt assembly for SSE events:
+
+```
+{resolved prompt}
+
+=== EVENT ===
+Source: {sse.name} ({sse.url})
+Event type: {event type or "message"}
+Event ID: {id}
+Received: {timestamp}
+
+=== DATA ===
+{event data}
+```
+
+Connection management:
+
+- Each SSE source runs as an independent tokio task
+- Automatic reconnection with exponential backoff (5s → 10s → 20s → 60s max)
+- `Last-Event-ID` header sent on reconnection (allows server to replay
+  missed events)
+- Optional custom headers for authentication (env var expansion in values)
+- Connection timeout: 30 seconds for initial connect, then keep-alive based
+  on server's `retry:` field (default 5 seconds)
+- If the server sends no events for 5 minutes and no SSE comments (`:` keep-
+  alive lines), the connection is considered stale and recycled
+
+**File watching: `[[listen.watch]]`**
+
+Watch files or directories for changes using inotify and create sessions
+when matching events occur. This turns a directory into an inbox — drop a
+file in, the agent processes it.
+
+```toml
 [[listen.watch]]
 name = "inbox"
 path = "/home/user/agent-inbox/"
-events = ["create"]
-prompt = "A new file appeared in the inbox. Process it."
+recursive = true                   # watch subdirectories too (default false)
+events = ["create"]                # which events trigger sessions
+prompt = "A new file appeared in the inbox. Read it and process the contents."
+# Optional: only watch files matching a glob pattern
+glob = "*.eml"
+
+[[listen.watch]]
+name = "config-changes"
+path = "/etc/myapp/"
+recursive = true
+events = ["modify"]
+glob = "*.conf"
+debounce = 5                       # seconds — coalesce rapid changes (default 2)
+prompt = "A config file was modified. Review the change and check for issues."
+
+[[listen.watch]]
+name = "log-errors"
+path = "/var/log/myapp/error.log"  # can watch a single file too
+events = ["modify"]
+prompt = "The error log was updated. Read the new entries and investigate."
 ```
 
-These would follow the same pattern: receive event → assemble prompt → create
-session. The webhook receiver is the initial implementation because webhooks
-are the most universal push mechanism — every CI system, code forge,
-monitoring tool, and SaaS product supports them.
+How file watching works:
+
+1. On startup, set up inotify watches for each configured `path`
+2. If `recursive` is true, watch all subdirectories (add watches as new
+   dirs are created)
+3. For each inotify event:
+   a. Check event type against `events` list (`create`, `modify`, `delete`,
+      `move_to`, `move_from`)
+   b. If `glob` is configured, check the filename against the pattern
+      (skip non-matching files)
+   c. Debounce: coalesce events for the same file within the `debounce`
+      window (default 2 seconds). Editors often create multiple events per
+      save (write temp file, rename, chmod). The session is created after
+      the debounce window expires with no new events for that file.
+   d. Check rate limit (per watch source)
+   e. Assemble session prompt and POST /sessions to daemon
+
+Prompt assembly for file events:
+
+```
+{watch.prompt}
+
+=== FILE EVENT ===
+Source: {watch.name}
+Path: {absolute path to file}
+Event: {create | modify | delete | move}
+Timestamp: {timestamp}
+Size: {file size in bytes, if file exists}
+```
+
+For `create` and `modify` events on reasonably sized files (< 100 KB),
+the file content is included in the prompt:
+
+```
+=== FILE CONTENT ===
+{file contents, truncated at 100 KB}
+```
+
+For larger files or binary files, the prompt just reports the path and
+the agent can use `read_file` to access it during the session. For `delete`
+events, there's obviously no content to include.
+
+Debouncing:
+
+- Default 2-second debounce window per file path
+- Configurable per watch: `debounce = 5` (seconds)
+- Multiple events for the same file within the window are coalesced into
+  one session. The session gets the final event type (e.g., create then
+  modify → modify; create then delete → no session).
+- Different files debounce independently
+- Minimum debounce: 0 (disabled). Maximum: 60 seconds.
+
+Implementation notes:
+
+- Uses the `inotify` crate (Linux) for efficient kernel-level file watching
+- Falls back to polling (stat-based, 1-second interval) on non-Linux platforms
+  or if inotify watch limit is exhausted (`/proc/sys/fs/inotify/max_user_watches`)
+- Hidden files and directories (starting with `.`) are skipped by default
+  unless the glob explicitly matches them
+- Symlinks are not followed (watches the link, not the target)
+- If the watched directory doesn't exist on startup, log a warning and
+  retry every 30 seconds (it might be a mount point that appears later)
+
+**All three listener types in one binary:**
+
+`phyl-listen` hosts webhooks, SSE subscriptions, and file watches in a
+single process. They share the daemon connection (Unix socket HTTP client)
+and rate limiting infrastructure. Config sections are independent:
+
+```toml
+[listen]
+bind = "127.0.0.1:7890"           # only needed if webhooks are configured
+
+[[listen.hook]]
+# ... webhook configs ...
+
+[[listen.sse]]
+# ... SSE subscription configs ...
+
+[[listen.watch]]
+# ... file watch configs ...
+```
+
+If no `[[listen.hook]]` sections exist, the HTTP server is not started
+(no port opened). SSE and watch listeners run regardless. This means you
+can use `phyl-listen` purely for file watching or SSE subscription without
+opening any ports.
 
 **The trifecta of event sources:**
 
@@ -1146,6 +1313,32 @@ name = "ci-pipeline"
 path = "/hook/ci"
 secret = "$CI_WEBHOOK_TOKEN"
 prompt = "A CI build notification arrived. Check if anything needs attention."
+
+# SSE subscriptions (used by phyl-listen)
+[[listen.sse]]
+name = "deploy-events"
+url = "https://internal.example.com/events/stream"
+headers = { Authorization = "Bearer $DEPLOY_API_TOKEN" }
+prompt = "A deployment event occurred. Check system health."
+route_event = true
+routes = { deploy_fail = "A deployment failed. Investigate immediately." }
+
+# File watches (used by phyl-listen)
+[[listen.watch]]
+name = "inbox"
+path = "/home/user/agent-inbox/"
+events = ["create"]
+glob = "*.eml"
+prompt = "A new email file appeared. Read it and process the contents."
+
+[[listen.watch]]
+name = "config-changes"
+path = "/etc/myapp/"
+recursive = true
+events = ["modify"]
+glob = "*.conf"
+debounce = 5
+prompt = "A config file was modified. Review the change and check for issues."
 ```
 
 Tools are discovered from `$PATH` — any executable named `phyl-tool-*` is a
@@ -1395,17 +1588,18 @@ into an event source for the agent.
 
 ### Phase 12: Incoming Event Listener
 
-The push complement to polling. External systems send events to the agent via
-webhooks (HTTP POST), and the listener creates sessions to handle them. This
-is how the agent reacts to GitHub events, CI/CD notifications, monitoring
-alerts, or anything that can make an HTTP request.
+Three listener types in one binary: webhooks (HTTP POST from external
+systems), SSE subscription (persistent connection to external event streams),
+and file watching (inotify on local directories). All create sessions via
+`POST /sessions` on the daemon API.
 
-- [ ] Implement `phyl-listen`:
-      - Standalone binary, long-lived process alongside daemon and poller.
+**12a: Webhooks**
+
+- [ ] Implement webhook listener in `phyl-listen`:
       - Read `[listen]` and `[[listen.hook]]` configs from
         `$PHYLACTERY_HOME/config.toml`
       - Bind HTTP server to `listen.bind` address (default
-        `127.0.0.1:7890`) using `axum` + `tokio`
+        `127.0.0.1:7890`) using `axum` + `tokio`. Skip if no hooks configured.
       - Group hooks by path — multiple hooks can share a path (matched in
         config order, first filter match wins)
       - On incoming POST to a configured path:
@@ -1421,25 +1615,18 @@ alerts, or anything that can make an HTTP request.
         - Return 202 Accepted with session ID
       - Return 404 for unconfigured paths, 401 for bad signatures, 429 for
         rate limit exceeded
-      - Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`)
-      - Log activity to stderr
-- [ ] Config types: `ListenConfig` with `bind`, `ListenHookConfig` with
-      `name`, `path`, `prompt`, optional `secret`, `filter_header`,
-      `filter_values`, `rate_limit`, `dedup_header`, `max_body_size`,
-      `route_header`, `routes` (HashMap<String, String>)
+- [ ] Config types: `ListenHookConfig` with `name`, `path`, `prompt`,
+      optional `secret`, `filter_header`, `filter_values`, `rate_limit`,
+      `dedup_header`, `max_body_size`, `route_header`,
+      `routes` (HashMap<String, String>)
 - [ ] Webhook secret verification: HMAC-SHA256 against
       `X-Hub-Signature-256` (GitHub-style), with configurable header name
       for other providers. Environment variable expansion in `secret` field.
-- [ ] Prompt assembly: session prompt includes the hook's `prompt` template,
-      source info (hook name, path, timestamp), relevant headers, and the
-      full request body
-- [ ] Rate limiting: in-memory sliding window per hook. Default 10/minute.
-      Returns 429 when exceeded.
-- [ ] Deduplication: in-memory cache of delivery IDs (from configurable
-      header, default `X-Request-Id`). 5-minute TTL. Duplicate deliveries
-      acknowledged with 200 but don't create sessions.
+- [ ] Webhook prompt assembly: hook's prompt + source info (hook name,
+      path, timestamp) + relevant headers + full request body
+- [ ] Webhook deduplication: in-memory cache of delivery IDs (from
+      configurable header, default `X-Request-Id`). 5-minute TTL.
 - [ ] Payload size limit: 1 MB default, configurable per hook
-- [ ] Add `phyl-listen` to workspace `Cargo.toml`
 - [ ] Event-type routing: resolve prompt from `route_header` + `routes`
       map when present, fall back to `prompt` for unmatched header values.
       Multiple hooks on same path matched in config order.
@@ -1448,6 +1635,93 @@ alerts, or anything that can make an HTTP request.
       event-type prompt resolution (routes map + fallback)
 - [ ] Test: configure a webhook hook, POST to it, verify session creation
 - [ ] Test: configure event-type routes, verify different prompts per event
+
+**12b: SSE Subscription**
+
+- [ ] Implement SSE subscription listener in `phyl-listen`:
+      - Read `[[listen.sse]]` configs from `$PHYLACTERY_HOME/config.toml`
+      - For each SSE source, spawn a tokio task that connects to the URL
+        and parses the `text/event-stream` format
+      - Parse SSE fields: `event:` (type), `data:` (payload, multi-line),
+        `id:` (deduplication/reconnection), `retry:` (reconnect interval)
+      - For each event:
+        - Filter by `events` list if configured (skip non-matching types)
+        - Resolve prompt: if `route_event` is true and event type matches
+          a key in `routes`, use that prompt; else use fallback `prompt`
+        - Check rate limit (per SSE source, default 10/minute)
+        - Check deduplication (by SSE `id:` field, 5-minute cache)
+        - Assemble session prompt and POST /sessions to daemon
+      - Automatic reconnection with exponential backoff (5s → 10s → 20s →
+        60s max). Send `Last-Event-ID` header on reconnect.
+      - Stale connection detection: recycle if no events or keep-alive
+        comments for 5 minutes
+- [ ] Config types: `ListenSseConfig` with `name`, `url`, `prompt`,
+      optional `headers` (HashMap<String, String> with env var expansion),
+      `events` (Vec<String>), `route_event` (bool), `routes`
+      (HashMap<String, String>), `rate_limit`
+- [ ] SSE prompt assembly: resolved prompt + source info (name, URL,
+      event type, event ID, timestamp) + event data
+- [ ] SSE reconnection: exponential backoff, `Last-Event-ID` header,
+      respect server `retry:` field
+- [ ] Unit tests: SSE frame parsing (event, data, id, multi-line data,
+      comments), event-type routing, reconnection logic, config parsing
+- [ ] Test: connect to an SSE endpoint, verify session creation on event
+
+**12c: File Watching**
+
+- [ ] Implement file watch listener in `phyl-listen`:
+      - Read `[[listen.watch]]` configs from `$PHYLACTERY_HOME/config.toml`
+      - Set up inotify watches for each configured `path` (directory or file)
+      - If `recursive` is true, watch all subdirectories and add watches
+        for newly created directories
+      - For each inotify event:
+        - Check event type against configured `events` list (`create`,
+          `modify`, `delete`, `move_to`, `move_from`)
+        - If `glob` is configured, match filename against pattern
+        - Debounce: coalesce events for the same file path within the
+          `debounce` window (default 2 seconds). After the window expires
+          with no new events for that file, create the session.
+        - Check rate limit (per watch source, default 10/minute)
+        - Assemble session prompt and POST /sessions to daemon
+      - Include file content in prompt for create/modify events on small
+        files (< 100 KB). Omit for large/binary/deleted files.
+      - Skip hidden files/directories (starting with `.`) unless glob
+        explicitly matches
+      - If watched path doesn't exist, log warning and retry every 30s
+- [ ] Config types: `ListenWatchConfig` with `name`, `path`, `prompt`,
+      `recursive` (bool, default false), `events` (Vec<String>),
+      optional `glob`, `debounce` (seconds, default 2, min 0, max 60),
+      `rate_limit`
+- [ ] File watch prompt assembly: watch's prompt + file event info (path,
+      event type, timestamp, size) + file content (for small files on
+      create/modify events)
+- [ ] Debouncing: per-file-path timer, coalesce rapid events (editors
+      generate multiple events per save). Final event type wins (create
+      then modify → modify; create then delete → no session).
+- [ ] Platform support: inotify on Linux (via `inotify` crate), fall back
+      to stat-based polling (1-second interval) on other platforms or if
+      inotify watch limit is exhausted
+- [ ] Unit tests: event filtering, glob matching, debounce coalescing,
+      prompt assembly with/without file content, config parsing
+- [ ] Test: watch a directory, create a file, verify session creation
+
+**Shared infrastructure (all listener types)**
+
+- [ ] Add `phyl-listen` to workspace `Cargo.toml`
+- [ ] `ListenConfig` with `bind` (optional — only for webhooks),
+      `hook` (Vec), `sse` (Vec), `watch` (Vec)
+- [ ] Shared rate limiting: in-memory sliding window, configurable per
+      source. Default 10 sessions/minute. Returns 429 (webhooks) or
+      drops event with log warning (SSE/watch).
+- [ ] Shared daemon client: Unix socket HTTP client for POST /sessions,
+      same pattern as `phyl` CLI client module
+- [ ] Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`) — close
+      HTTP server, disconnect SSE streams, remove inotify watches
+- [ ] HTTP server only started if `[[listen.hook]]` sections exist; SSE
+      and watch listeners run independently of whether the HTTP server
+      is active
+- [ ] Log activity to stderr (same convention as other binaries)
+- [ ] Integration test: run all three listener types simultaneously
 
 ---
 
