@@ -168,9 +168,33 @@ Tracking implementation status against the [plan](PLAN.md).
 - [x] Unit tests (15 tests): client error display/construction (5 tests),
       log entry formatting for all entry types (10 tests)
 
-## Phase 7: MCP Bridge
+## Phase 7: MCP Bridge — **Complete**
 
-- [ ] Implement `phyl-tool-mcp`
+- [x] Implement `phyl-tool-mcp`:
+      - Read MCP server configs from `$PHYLACTERY_HOME/config.toml`
+        (`[[mcp]]` sections with `name`, `command`, `args`, `env`)
+      - MCP JSON-RPC 2.0 client: `initialize` handshake with
+        `protocolVersion: "2024-11-05"`, `notifications/initialized`,
+        `tools/list`, `tools/call`
+      - On `--spec`: start each configured MCP server, perform init
+        handshake, query `tools/list`, aggregate into `Vec<ToolSpec>` with
+        server-name-prefixed tool names (e.g., `filesystem_read_file`),
+        all in `mode: "server"`, shut down MCP servers, print JSON
+      - On `--serve`: start all configured MCP servers, build routing
+        table (prefixed name → server index + original name), run NDJSON
+        server loop reading `ServerRequest` from stdin, route to correct
+        MCP server via `tools/call`, convert MCP response content items
+        to `ServerResponse` on stdout, shut down servers on stdin EOF
+      - Environment variable expansion in MCP server env config
+        (`$VAR` references resolved from process environment)
+      - Graceful shutdown: drop stdin to signal EOF, try_wait then kill
+      - Handles notifications and unexpected messages from MCP servers
+        (skips with log to stderr)
+- [x] Unit tests (17 tests): JSON-RPC request/response serialization,
+      MCP tool definition parsing, content extraction from MCP responses,
+      tool name prefixing, routing table lookup, ToolSpec output format,
+      config loading with missing home, env var expansion, initialize
+      params structure
 
 ## Phase 8: Knowledge Base + Git
 
