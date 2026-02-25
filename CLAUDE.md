@@ -49,8 +49,8 @@ All inter-process communication is JSON on stdin/stdout. The types in `phyl-core
 
 ## Conventions
 
-- Rust edition 2024. Common dependencies (`serde`, `serde_json`, `chrono`, `uuid`, `toml`, `libc`, `tokio`, `axum`, `hyper`, `hyper-util`, `http-body-util`, `bytes`, `tower`) are declared as workspace dependencies in the root `Cargo.toml`.
+- Rust edition 2024. Common dependencies (`serde`, `serde_json`, `chrono`, `uuid`, `toml`, `libc`, `tokio`, `axum`, `hyper`, `hyper-util`, `http-body-util`, `bytes`, `tower`, `anyhow`) are declared as workspace dependencies in the root `Cargo.toml`.
 - All serializable types derive `Serialize`/`Deserialize`. Enums use `#[serde(rename_all = "snake_case")]`. Optional fields use `skip_serializing_if`.
-- Errors are returned as `Result<(), String>` in the current simple code. This will likely evolve to proper error types.
+- The `phyl` CLI uses `anyhow::Result<()>` for error handling. Other binaries still use `Result<(), String>` in places.
 - Binaries log to stderr. Session conversation logs go to `log.jsonl` files.
 - The `phyl init` git repo disables commit signing and sets a local `phylactery` identity to avoid depending on the user's global git config.
