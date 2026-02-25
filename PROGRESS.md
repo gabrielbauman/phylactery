@@ -135,10 +135,38 @@ Tracking implementation status against the [plan](PLAN.md).
       building, log reading (empty, with entries, summary, prompt extraction),
       config defaults, router creation
 
-## Phase 6: CLI Client
+## Phase 6: CLI Client — **Complete**
 
-- [ ] Implement remaining `phyl` subcommands (session, ls, status, say, log, stop, watch, start)
-- [ ] Test: full cycle with daemon + CLI
+- [x] Implement `phyl` subcommands:
+      - `phyl start [-d]` — launch `phylactd` (foreground via exec, or `-d`
+        for background with PID output). Auto-discovers `phylactd` binary
+        via `$PATH` or same directory as `phyl`.
+      - `phyl session [-d] "prompt"` — POST /sessions to create a session.
+        Foreground mode tails `log.jsonl` with formatted output until session
+        ends. Detached mode (`-d`) prints session UUID and returns.
+      - `phyl ls` — GET /sessions, displays table with ID, status, created
+        timestamp, and truncated summary.
+      - `phyl status <id>` — GET /sessions/:id, displays session detail with
+        prompt, status, timestamps, and recent log entries (formatted).
+      - `phyl say <id> "msg"` — POST /sessions/:id/events, injects a user
+        message into a running session's FIFO.
+      - `phyl log <id>` — Tails session's `log.jsonl`. For finished sessions,
+        dumps the full log. For running sessions, follows with polling until
+        the session completes.
+      - `phyl stop <id>` — DELETE /sessions/:id, kills a running session.
+      - `phyl watch` — GET /feed (SSE), streams attention-worthy events
+        (questions, done, errors) across all sessions. Handles inline
+        question answering: prompts for input when a question event arrives,
+        sends the answer via POST /sessions/:id/events.
+- [x] Unix socket HTTP client module (`client.rs`): uses hyper 1.x low-level
+      `http1::handshake` over tokio `UnixStream`. Supports GET, POST, DELETE,
+      and streaming GET for SSE. Socket path resolved from `config.toml`.
+- [x] Log entry display formatting (`format.rs`): type-aware formatting for
+      all `LogEntryType` variants — user, assistant (with tool calls), tool
+      results (truncated to 200 chars), questions (with options), answers,
+      done (summary), errors, system messages.
+- [x] Unit tests (15 tests): client error display/construction (5 tests),
+      log entry formatting for all entry types (10 tests)
 
 ## Phase 7: MCP Bridge
 
@@ -150,11 +178,11 @@ Tracking implementation status against the [plan](PLAN.md).
 - [ ] `search_files` tool
 - [ ] Knowledge base summary generation at session startup
 
-## Phase 9: Human Attention System
+## Phase 9: Human Attention System — **Complete**
 
 - [x] Implement `phyl-tool-session` (server mode) — done in Phase 4
 - [x] `GET /feed` SSE endpoint in daemon — done in Phase 5
-- [ ] `phyl watch` CLI command
+- [x] `phyl watch` CLI command — done in Phase 6
 
 ## Phase 10: Signal Bridge
 
