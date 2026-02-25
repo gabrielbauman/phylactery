@@ -694,9 +694,9 @@ name = "github"
 path = "/hook/github"
 secret = "$GITHUB_WEBHOOK_SECRET"   # HMAC-SHA256 verification
 prompt = "A GitHub event arrived. Analyze it and take appropriate action."
-# Optional: only trigger on specific header values
-filter_header = "X-GitHub-Event"
-filter_values = ["push", "pull_request", "issues"]
+# Route to event-specific prompts based on a header value
+route_header = "X-GitHub-Event"
+routes = { push = "Code was pushed. Review the diff and summarize what changed.", pull_request = "A pull request was opened or updated. Review it.", issues = "A new issue was filed. Triage it and suggest next steps." }
 
 [[listen.hook]]
 name = "ci-pipeline"
@@ -705,25 +705,81 @@ secret = "$CI_WEBHOOK_TOKEN"
 prompt = "A CI build notification arrived. Check if anything needs attention."
 
 [[listen.hook]]
+name = "email-arrived"
+path = "/hook/email"
+prompt = "A new email arrived. Read it, summarize it, and flag anything that needs a reply."
+
+[[listen.hook]]
 name = "monitoring"
 path = "/hook/alerts"
 prompt = "A monitoring alert fired. Investigate and report what you find."
+```
+
+**Event-type routing:**
+
+A single webhook endpoint often receives many event types (e.g., GitHub sends
+pushes, PRs, issues, stars all to one URL). The `route_header` + `routes`
+fields let you map header values to event-specific prompts:
+
+- `route_header`: which HTTP header to inspect (e.g., `X-GitHub-Event`)
+- `routes`: a map of header values to prompts (e.g., `push` → "Review the
+  diff...", `pull_request` → "Review the PR...")
+- `prompt`: the fallback prompt if the header value isn't in the `routes` map,
+  or if `route_header` isn't set
+
+This keeps one webhook URL in the external service while giving the agent
+focused instructions per event type. Events whose header value isn't in the
+`routes` map still create sessions using the fallback `prompt` — nothing is
+silently dropped.
+
+Alternatively, multiple `[[listen.hook]]` entries can share the same `path`.
+They're matched in config order (first match wins), each with its own
+`filter_header`/`filter_values` and `prompt`. This is more verbose but gives
+independent rate limits and dedup settings per event type:
+
+```toml
+[[listen.hook]]
+name = "github-push"
+path = "/hook/github"
+secret = "$GITHUB_WEBHOOK_SECRET"
+filter_header = "X-GitHub-Event"
+filter_values = ["push"]
+prompt = "Code was pushed. Review the diff and summarize what changed."
+
+[[listen.hook]]
+name = "github-pr"
+path = "/hook/github"
+secret = "$GITHUB_WEBHOOK_SECRET"
+filter_header = "X-GitHub-Event"
+filter_values = ["pull_request"]
+prompt = "A pull request was opened or updated. Review it."
+rate_limit = 5                     # PRs are noisier, tighter limit
+
+[[listen.hook]]
+name = "github-catchall"
+path = "/hook/github"
+secret = "$GITHUB_WEBHOOK_SECRET"
+prompt = "A GitHub event arrived. Check what happened."
 ```
 
 **How it works:**
 
 1. On startup, read `[listen]` config from `config.toml`
 2. Bind HTTP server to `listen.bind` address (default `127.0.0.1:7890`)
-3. Register routes for each `[[listen.hook]]` — one path per hook
+3. Group hooks by path — multiple hooks can share a path
 4. On incoming POST:
-   a. Match path to a configured hook (404 if no match)
-   b. Verify webhook secret if configured (HMAC-SHA256 of body against
-      `X-Hub-Signature-256` or similar header; 401 if invalid)
-   c. Check rate limit for this hook (reject with 429 if exceeded)
-   d. Check deduplication window (skip if duplicate delivery ID seen recently)
-   e. Assemble session prompt from the hook's template + request payload
-   f. POST /sessions to the daemon API
-   g. Return 202 Accepted with the session ID
+   a. Collect all hooks matching the request path (404 if none)
+   b. Verify webhook secret if configured (shared across hooks on same path;
+      checked once, 401 if invalid)
+   c. Walk hooks in config order, check `filter_header`/`filter_values` —
+      first match wins. If no filter, it matches unconditionally.
+   d. Resolve prompt: if matching hook has `route_header` + `routes`, look up
+      the header value in the routes map (fall back to `prompt` if not found)
+   e. Check rate limit for this hook (reject with 429 if exceeded)
+   f. Check deduplication window (skip if duplicate delivery ID seen recently)
+   g. Assemble session prompt from the resolved prompt + request payload
+   h. POST /sessions to the daemon API
+   i. Return 202 Accepted with the session ID
 
 **Prompt assembly:**
 
@@ -1076,7 +1132,14 @@ bind = "127.0.0.1:7890"            # TCP address for webhook receiver
 name = "github"
 path = "/hook/github"
 secret = "$GITHUB_WEBHOOK_SECRET"   # HMAC-SHA256 verification
-prompt = "A GitHub event arrived. Analyze it and take appropriate action."
+prompt = "A GitHub event arrived. Analyze it."          # fallback prompt
+route_header = "X-GitHub-Event"                         # route by event type
+routes = { push = "Code was pushed. Review the diff.", pull_request = "A PR was opened. Review it.", issues = "An issue was filed. Triage it." }
+
+[[listen.hook]]
+name = "email-arrived"
+path = "/hook/email"
+prompt = "A new email arrived. Summarize it and flag anything that needs a reply."
 
 [[listen.hook]]
 name = "ci-pipeline"
@@ -1343,13 +1406,17 @@ alerts, or anything that can make an HTTP request.
         `$PHYLACTERY_HOME/config.toml`
       - Bind HTTP server to `listen.bind` address (default
         `127.0.0.1:7890`) using `axum` + `tokio`
-      - Register one route per `[[listen.hook]]` based on configured `path`
+      - Group hooks by path — multiple hooks can share a path (matched in
+        config order, first filter match wins)
       - On incoming POST to a configured path:
         - Verify webhook secret (HMAC-SHA256) if `secret` is configured
+        - Walk hooks for this path in config order, apply
+          `filter_header`/`filter_values` — first match wins
+        - Resolve prompt: if hook has `route_header` + `routes`, look up
+          header value in routes map; fall back to `prompt` field
         - Check rate limit (default 10 sessions/minute per hook)
         - Check deduplication cache (skip duplicate delivery IDs)
-        - Apply header filter if configured (reject non-matching events)
-        - Assemble session prompt from hook template + request payload
+        - Assemble session prompt from resolved prompt + request payload
         - POST /sessions to daemon API (via Unix socket, same client as CLI)
         - Return 202 Accepted with session ID
       - Return 404 for unconfigured paths, 401 for bad signatures, 429 for
@@ -1358,7 +1425,8 @@ alerts, or anything that can make an HTTP request.
       - Log activity to stderr
 - [ ] Config types: `ListenConfig` with `bind`, `ListenHookConfig` with
       `name`, `path`, `prompt`, optional `secret`, `filter_header`,
-      `filter_values`, `rate_limit`, `dedup_header`, `max_body_size`
+      `filter_values`, `rate_limit`, `dedup_header`, `max_body_size`,
+      `route_header`, `routes` (HashMap<String, String>)
 - [ ] Webhook secret verification: HMAC-SHA256 against
       `X-Hub-Signature-256` (GitHub-style), with configurable header name
       for other providers. Environment variable expansion in `secret` field.
@@ -1372,9 +1440,14 @@ alerts, or anything that can make an HTTP request.
       acknowledged with 200 but don't create sessions.
 - [ ] Payload size limit: 1 MB default, configurable per hook
 - [ ] Add `phyl-listen` to workspace `Cargo.toml`
+- [ ] Event-type routing: resolve prompt from `route_header` + `routes`
+      map when present, fall back to `prompt` for unmatched header values.
+      Multiple hooks on same path matched in config order.
 - [ ] Unit tests: config parsing, HMAC verification, rate limiting,
-      deduplication, prompt assembly, route matching, header filtering
+      deduplication, prompt assembly, route matching, header filtering,
+      event-type prompt resolution (routes map + fallback)
 - [ ] Test: configure a webhook hook, POST to it, verify session creation
+- [ ] Test: configure event-type routes, verify different prompts per event
 
 ---
 
