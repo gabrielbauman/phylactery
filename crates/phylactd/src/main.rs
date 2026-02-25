@@ -532,40 +532,53 @@ async fn handle_delete_session(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let mut s = state.lock().unwrap();
-    let tracked = s
-        .sessions
-        .get_mut(&id)
-        .ok_or((StatusCode::NOT_FOUND, format!("Session {id} not found")))?;
+    // First pass: validate and send SIGTERM/kill, then drop the lock.
+    let needs_sigkill = {
+        let mut s = state.lock().unwrap();
+        let tracked = s
+            .sessions
+            .get_mut(&id)
+            .ok_or((StatusCode::NOT_FOUND, format!("Session {id} not found")))?;
 
-    if tracked.status != SessionStatus::Running {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("Session {id} is not running (status: {:?})", tracked.status),
-        ));
+        if tracked.status != SessionStatus::Running {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("Session {id} is not running (status: {:?})", tracked.status),
+            ));
+        }
+
+        // Kill the process.
+        if let Some(ref mut child) = tracked.child {
+            if let Err(e) = child.kill() {
+                eprintln!("phylactd: failed to kill child for {id}: {e}");
+            }
+            let _ = child.wait();
+            None // No follow-up needed.
+        } else {
+            // Re-adopted session: send SIGTERM first.
+            unsafe {
+                libc::kill(tracked.pid as libc::pid_t, libc::SIGTERM);
+            }
+            Some(tracked.pid) // Need follow-up SIGKILL.
+        }
+    }; // Lock dropped here.
+
+    // If we need to escalate to SIGKILL, wait asynchronously (don't block the runtime).
+    if let Some(pid) = needs_sigkill {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
     }
 
-    // Kill the process.
-    if let Some(ref mut child) = tracked.child {
-        if let Err(e) = child.kill() {
-            eprintln!("phylactd: failed to kill child for {id}: {e}");
-        }
-        // Wait to reap the zombie.
-        let _ = child.wait();
-    } else {
-        // Re-adopted session: kill by PID.
-        unsafe {
-            libc::kill(tracked.pid as libc::pid_t, libc::SIGTERM);
-        }
-        // Give it a moment, then SIGKILL.
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        unsafe {
-            libc::kill(tracked.pid as libc::pid_t, libc::SIGKILL);
+    // Second pass: update status.
+    {
+        let mut s = state.lock().unwrap();
+        if let Some(tracked) = s.sessions.get_mut(&id) {
+            tracked.status = SessionStatus::Done;
+            tracked.summary = Some("Killed by user".to_string());
         }
     }
-
-    tracked.status = SessionStatus::Done;
-    tracked.summary = Some("Killed by user".to_string());
 
     eprintln!("phylactd: killed session {id}");
 
