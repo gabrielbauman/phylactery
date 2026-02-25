@@ -294,17 +294,57 @@ The `id` field ties requests to responses, allowing the session runner to
 dispatch calls and match results. The tool can take as long as it needs to
 respond — this is how `ask_human` blocks for minutes waiting for a human.
 
-**How the session runner decides which mode to use:**
+A server-mode response can include a `"signal"` field to communicate
+out-of-band information to the session runner:
+
+```json
+{"id":"5","output":"Session complete.","signal":"end_session"}
+```
+
+The `"end_session"` signal tells the session runner to stop the agentic loop.
+This is how the `done` tool works — it returns a summary to the model AND
+signals the runner to shut down. No special-casing of tool names.
+
+**The `--spec` output declares the mode:**
+
+The spec includes a `"mode"` field: `"oneshot"` (default if omitted) or
+`"server"`.
+
+```json
+{
+  "name": "bash",
+  "description": "Execute a shell command",
+  "mode": "oneshot",
+  "parameters": { ... }
+}
+```
+
+```json
+[
+  {
+    "name": "ask_human",
+    "description": "Ask the human a question",
+    "mode": "server",
+    "parameters": { ... }
+  },
+  {
+    "name": "done",
+    "description": "End the session",
+    "mode": "server",
+    "parameters": { ... }
+  }
+]
+```
+
+**How the session runner uses this:**
 
 1. At session start, discover tools: `phyl-tool-X --spec`
-2. Try to start each tool in server mode: `phyl-tool-X --serve`
-3. If it exits immediately (doesn't support `--serve`), mark it as one-shot
-4. If it stays running, keep the handle and route calls to it via NDJSON
-5. At session end, close stdin on all server-mode tools → they exit
+2. Group by executable: if any tool from a binary declares `"server"` mode,
+   start it with `--serve` and keep the handle
+3. For `"oneshot"` tools, spawn a fresh process per call
+4. At session end, close stdin on all server-mode tools → they exit
 
-This is one unified protocol. Simple tools ignore `--serve` (or print an error
-and exit) and get invoked per-call. Complex tools implement `--serve` and stay
-alive. The session runner handles both transparently.
+No probing. No guessing. The spec is the truth.
 
 **Which tools use which mode:**
 
@@ -546,6 +586,7 @@ put it behind an SSH tunnel or a reverse proxy.
 `phyl` is a thin HTTP client. It talks to the daemon's Unix socket.
 
 ```
+phyl init [path]                   # Initialize agent home directory
 phyl session "do the thing"        # Start session, stream output (foreground)
 phyl session -d "do the thing"     # Start session, return ID (detached)
 phyl ls                            # List sessions
@@ -569,13 +610,16 @@ agent questions inline.
 
 ## Project Structure
 
+The code and the agent's data are **separate concerns**. The source tree builds
+the binaries. The agent's home directory holds its state. They never share a
+git repo.
+
+### Source Tree (this repo)
+
 ```
-phylactery/
+phylactery/                     # Code repo — you're looking at it
 ├── Cargo.toml                  # Workspace manifest
-├── LAW.md                      # Agent rules (user-authored, immutable)
-├── JOB.md                      # Agent job description (user-authored, immutable)
-├── SOUL.md                     # Agent identity (agent-authored, evolving)
-├── config.toml                 # Daemon config
+├── PLAN.md                     # This document
 ├── crates/
 │   ├── phyl-core/              # Shared types: Message, ToolCall, ToolSpec, etc.
 │   │   ├── Cargo.toml
@@ -598,7 +642,7 @@ phylactery/
 │   ├── phyl-tool-files/        # File read/write/search tool
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs
-│   ├── phyl-tool-session/     # Session tools: ask_human, done (server mode)
+│   ├── phyl-tool-session/      # Session tools: ask_human, done (server mode)
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs
 │   ├── phyl-tool-mcp/          # MCP bridge tool (server mode)
@@ -607,21 +651,50 @@ phylactery/
 │   └── phyl-bridge-signal/     # Signal Messenger bridge
 │       ├── Cargo.toml
 │       └── src/main.rs
-├── knowledge/                  # Git-tracked knowledge base
-│   └── .gitkeep
-└── sessions/                   # Per-session working directories (gitignored)
-    └── .gitkeep
+└── README.md
 ```
 
-**Why a Cargo workspace?** The Rust binaries share types via `phyl-core`, but
-compile to independent static binaries. `cargo build --release` produces all of
-them. They can be installed to `~/.local/bin/` or `/usr/local/bin/`.
+`cargo build --release` produces binaries. Install to `~/.local/bin/` or
+`/usr/local/bin/`. The source tree has no runtime role.
+
+### Agent Home (separate git repo, created by `phyl init`)
+
+```
+~/.phylactery/                  # Or wherever you point it — $PHYLACTERY_HOME
+├── .git/                       # Its own git repo for knowledge + state
+├── config.toml                 # Runtime configuration
+├── LAW.md                      # Agent rules (user-authored, immutable)
+├── JOB.md                      # Agent job description (user-authored, immutable)
+├── SOUL.md                     # Agent identity (agent-authored, evolving)
+├── knowledge/                  # Git-tracked knowledge base
+│   ├── INDEX.md                # Agent-maintained table of contents
+│   ├── contacts/
+│   ├── projects/
+│   ├── preferences/
+│   └── journal/
+└── sessions/                   # Per-session working directories (gitignored)
+    └── .gitignore              # Ignore everything under sessions/
+```
+
+This is the agent's home directory. It's initialized once with `phyl init`,
+which creates the directory, initializes the git repo, creates the seed
+structure, and writes a default `config.toml`. Everything the agent knows
+and remembers lives here.
+
+The `$PHYLACTERY_HOME` environment variable points to it (default
+`~/.phylactery`). All binaries look here for config, LAW, JOB, SOUL, and
+knowledge. The daemon and session runner both reference it.
+
+**Why separate?** The code repo has releases, branches, CI. The agent's home
+has journal entries, contact notes, and SOUL reflections. Different lifecycles,
+different authors, different audiences. Mixing them would be like committing
+`/var/log` into your app's source tree.
 
 ---
 
 ## Configuration
 
-`config.toml`:
+`$PHYLACTERY_HOME/config.toml`:
 
 ```toml
 [daemon]
@@ -630,17 +703,15 @@ socket = "$XDG_RUNTIME_DIR/phylactery.sock"
 [session]
 timeout_minutes = 60
 max_concurrent = 4
-model = "phyl-model-claude"     # Path or name of model adapter binary
+model = "phyl-model-claude"     # Name or path of model adapter binary
+
+[model]
+context_window = 200000         # Approximate token limit
+compress_at = 0.8               # Summarize history at 80% capacity
 
 [git]
-repo_path = "/home/user/phylactery"
 auto_commit = true
-
-# Tool discovery: search these directories for phyl-tool-* executables
-tools_path = [
-  "./tools",                    # Project-local tools
-  "~/.local/lib/phylactery/tools",  # User tools
-]
+# remote = "origin"             # Optional: auto-push after commits
 
 # MCP servers (used by phyl-tool-mcp)
 [[mcp]]
@@ -653,7 +724,16 @@ name = "brave-search"
 command = "npx"
 args = ["-y", "@anthropic/mcp-server-brave-search"]
 env = { BRAVE_API_KEY = "$BRAVE_API_KEY" }
+
+[bridge.signal]
+phone = "+1234567890"           # Agent's Signal number
+owner = "+0987654321"           # Owner's number (only accept from this)
+signal_cli = "signal-cli"       # Path to signal-cli binary
 ```
+
+Tools are discovered from `$PATH` — any executable named `phyl-tool-*` is a
+tool. Install them alongside the other binaries. No separate tools_path config
+needed. This is how Unix does it: `git-*` subcommands, `docker-*` plugins.
 
 ---
 
@@ -717,19 +797,24 @@ Each phase produces something you can run and test.
 ### Phase 1: Core Types + Skeleton
 
 - [ ] `cargo init` workspace with `phyl-core`
-- [ ] Define shared types in `phyl-core`: `Message`, `ToolCall`, `ToolSpec`,
-      `ModelRequest`, `ModelResponse`, `ToolInput`, `ToolOutput`, `LogEntry`
+- [ ] Define shared types in `phyl-core`: `Message`, `ToolCall`, `ToolSpec`
+      (with `mode` field), `ModelRequest`, `ModelResponse`, `ToolInput`,
+      `ToolOutput`, `LogEntry`, `ServerResponse` (with `signal` field)
 - [ ] All types derive `Serialize`/`Deserialize`
 - [ ] Stub the other crates with `fn main() { todo!() }`
+- [ ] Implement `phyl init`: create `$PHYLACTERY_HOME` with git repo, seed
+      `config.toml`, `LAW.md`, `JOB.md`, `SOUL.md` ("I am new."),
+      `knowledge/` structure, `sessions/.gitignore`
 - [ ] Verify: `cargo build` succeeds, produces multiple binaries
 
 ### Phase 2: Tool Protocol
 
 Build two tools and verify the protocol works end-to-end from the command line.
 
-- [ ] Implement `phyl-tool-bash`: `--spec` mode and invocation mode
+- [ ] Implement `phyl-tool-bash`: `--spec` (with `"mode":"oneshot"`) and
+      invocation mode. chdir to `$PHYLACTERY_SESSION_DIR/scratch/`, enforce
+      timeout.
 - [ ] Implement `phyl-tool-files`: read_file, write_file, search_files
-- [ ] Write `tools/phyl-tool-done` as a shell script
 - [ ] Test from command line:
       `echo '{"name":"bash","arguments":{"command":"echo hi"}}' | phyl-tool-bash`
 
@@ -1060,6 +1145,113 @@ to route replies.
 Model failures fail the session after one retry. Tool failures are reported to
 the model as errors — the model can decide to retry, try a different approach,
 or ask the human.
+
+### System Prompt Template
+
+The system prompt is assembled from files, not improvised. Concrete format:
+
+```
+=== LAW ===
+{contents of LAW.md}
+
+=== JOB ===
+{contents of JOB.md}
+
+=== SOUL ===
+{contents of SOUL.md}
+
+=== KNOWLEDGE INDEX ===
+{contents of knowledge/INDEX.md}
+
+=== SESSION ===
+Session ID: {uuid}
+Working directory: {session_dir}/scratch/
+You have access to the following tools: {tool_names}
+
+Remember: LAW rules are absolute. Obey them unconditionally.
+```
+
+Each section has a clear delimiter. The model can distinguish LAW from JOB from
+SOUL. The session section provides runtime context.
+
+This template lives as a constant in `phyl-run`. It is not configurable —
+the structure is part of the system's design, not a user preference.
+
+### SOUL.md Growth Bounds
+
+SOUL.md grows with every session. Unbounded growth eats the context window.
+
+**Decision: Hard size cap, enforced by the finalization prompt.**
+
+The finalization prompt tells the model: "SOUL.md must stay under 2000 words.
+If you need to add something, revise and compress — don't just append. Old
+reflections that no longer feel relevant can be removed. This file is your
+living self-portrait, not a journal. Keep it current, not comprehensive."
+
+The journal (for detailed per-session notes) goes in `knowledge/journal/`.
+SOUL.md is identity — compact, evolving, and present-tense.
+
+If SOUL.md exceeds 3000 words despite instructions, `phyl-run` truncates
+from the middle (keeping the first and last sections) and logs a warning.
+This is a safety net, not the primary mechanism — the prompt should keep
+it in bounds.
+
+### Parallel Tool Calls
+
+Models often return multiple tool_calls in a single response (e.g.,
+"read these 3 files simultaneously"). These should run in parallel when
+possible.
+
+**Decision: Parallel by default, sequential when tools share a binary.**
+
+- One-shot tool calls to *different* binaries: run in parallel (`tokio::join!`)
+- One-shot tool calls to the *same* binary: run in parallel (each is a
+  separate process, no shared state)
+- Server-mode tool calls: send all requests, then collect all responses
+  (the NDJSON `id` field handles multiplexing)
+
+In practice: all tool calls from a single model response are dispatched
+simultaneously. Results are collected and appended to history in the order
+the model originally listed them.
+
+This is safe because tools are isolated processes. One tool can't affect
+another's execution. If a tool fails, its error is reported independently.
+
+### Operational Logging
+
+**Decision: stderr is the log. Follow Unix convention.**
+
+- All binaries log to stderr. The daemon captures child stderr.
+- `phyl-run` writes operational messages (tool dispatch, model invocations,
+  timing) to stderr, not to `log.jsonl`. The JSONL log is the conversation;
+  stderr is the operational trace.
+- `phylactd` logs to stderr. Run under systemd and it goes to journald
+  automatically. Run in a terminal and you see it live.
+- Per-session stderr is captured by the daemon and written to
+  `sessions/<uuid>/stderr.log` for debugging.
+- Log level controlled by `RUST_LOG` env var (standard `env_logger` / `tracing`
+  convention). Default: `info`.
+
+No custom log format. No log rotation. Use `logrotate` or `journald` — tools
+that already exist.
+
+### Bash Tool Safety
+
+The bash tool runs real commands. LAW.md is the policy layer. But sane defaults
+reduce the blast radius of mistakes.
+
+**Decision: chdir + resource limits. No sandboxing.**
+
+- Working directory: `$PHYLACTERY_SESSION_DIR/scratch/`. Every bash command
+  runs here unless the model uses an absolute path.
+- Timeout: tool-level timeout (default 2 minutes, configurable).
+- `PATH`: inherited from the daemon's environment. No restriction — the model
+  needs access to real tools.
+- No network restriction, no filesystem restriction. The agent needs to do
+  real work.
+
+The bash tool sets the working directory and enforces the timeout. Everything
+else is the model's responsibility, governed by LAW.md.
 
 ### Knowledge Base Summary
 
