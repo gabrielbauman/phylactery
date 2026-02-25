@@ -105,6 +105,20 @@ fn cmd_systemd() -> anyhow::Result<()> {
         }
     }
 
+    // Check linger — without it, user services stop on logout
+    if !is_linger_enabled() {
+        eprintln!();
+        eprintln!("Enabling lingering (keeps services running after logout)...");
+        if try_enable_linger() {
+            eprintln!("  linger enabled");
+        } else {
+            let user = std::env::var("USER").unwrap_or_else(|_| "$USER".to_string());
+            eprintln!("  warning: could not enable linger automatically");
+            eprintln!("  Run manually: sudo loginctl enable-linger {user}");
+            eprintln!("  Without linger, services will stop when you log out.");
+        }
+    }
+
     eprintln!("Done. Check status with: phyl setup status");
     Ok(())
 }
@@ -137,6 +151,14 @@ async fn cmd_status() -> anyhow::Result<()> {
     // Secrets
     let secrets_count = count_secrets(&home);
     println!("  Secrets:  secrets.env ({secrets_count} keys)");
+
+    // Linger
+    let linger_status = if is_linger_enabled() {
+        "enabled"
+    } else {
+        "disabled (services will stop on logout)"
+    };
+    println!("  Linger:   {linger_status}");
 
     println!();
     println!("Services");
@@ -407,6 +429,31 @@ fn dirs_config_home() -> PathBuf {
 
 fn home_env() -> Option<String> {
     std::env::var("HOME").ok()
+}
+
+/// Check whether linger is enabled for the current user.
+fn is_linger_enabled() -> bool {
+    let user = std::env::var("USER").unwrap_or_default();
+    if user.is_empty() {
+        return false;
+    }
+    let output = std::process::Command::new("loginctl")
+        .args(["show-user", &user, "--property=Linger"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).trim() == "Linger=yes"
+        }
+        _ => false,
+    }
+}
+
+/// Try to enable linger for the current user. Returns true on success.
+fn try_enable_linger() -> bool {
+    let output = std::process::Command::new("loginctl")
+        .args(["enable-linger"])
+        .output();
+    matches!(output, Ok(o) if o.status.success())
 }
 
 #[cfg(test)]
