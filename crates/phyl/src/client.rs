@@ -64,7 +64,7 @@ pub async fn get(socket: &str, path: &str) -> Result<(StatusCode, String), Clien
         .uri(path)
         .header("Host", "localhost")
         .body(Empty::<Bytes>::new())
-        .unwrap();
+        .map_err(|e| ClientError::request(e))?;
 
     let (status, body) = send_request(socket, req).await?;
     let body_bytes = body
@@ -88,7 +88,7 @@ pub async fn post(
         .header("Host", "localhost")
         .header("Content-Type", "application/json")
         .body(Full::new(Bytes::from(json_body.to_string())))
-        .unwrap();
+        .map_err(|e| ClientError::request(e))?;
 
     let (status, body) = send_request(socket, req).await?;
     let body_bytes = body
@@ -107,7 +107,7 @@ pub async fn delete(socket: &str, path: &str) -> Result<(StatusCode, String), Cl
         .uri(path)
         .header("Host", "localhost")
         .body(Empty::<Bytes>::new())
-        .unwrap();
+        .map_err(|e| ClientError::request(e))?;
 
     let (status, body) = send_request(socket, req).await?;
     let body_bytes = body
@@ -129,7 +129,7 @@ pub async fn get_stream(
         .uri(path)
         .header("Host", "localhost")
         .body(Empty::<Bytes>::new())
-        .unwrap();
+        .map_err(|e| ClientError::request(e))?;
 
     send_request(socket, req).await
 }
