@@ -5,6 +5,18 @@ programs. Each does one thing. They communicate via text streams, files, and
 Unix sockets. Written in Rust where reliability matters; tools and model
 adapters can be anything executable.
 
+**Two repos, two concerns:**
+
+- **This repo** (`phylactery`) is the **source code**. It builds the binaries.
+  It has releases, branches, and CI. You clone it, build it, install the
+  binaries, and never look at it again unless you're hacking on the agent
+  itself.
+
+- **`$PHYLACTERY_HOME`** (default `~/.phylactery`) is the **agent's home**.
+  A separate git repo created by `phyl init`. It holds `LAW.md`, `JOB.md`,
+  `SOUL.md`, the knowledge base, session state, and config. This is the
+  agent's living memory. It evolves every day. Back it up.
+
 ---
 
 ## Core Concepts
@@ -1001,24 +1013,47 @@ Issues that need concrete answers before or during implementation.
 ### Git Concurrency
 
 Multiple sessions can write to `knowledge/` and `SOUL.md` simultaneously.
-Git doesn't have file-level locking. Strategy:
 
-**Decision: Pull-rebase-commit retry loop.** Before any commit, the tool:
+**Knowledge base writes: pull-rebase-commit retry loop.**
 
-1. `git pull --rebase`
-2. `git add <file>`
-3. `git commit -m "..."`
-4. If commit fails (conflict): resolve automatically for append-only files
-   (SOUL.md, journal entries), or retry for others
-5. Retry up to 3 times
+`phyl-tool-files` uses this sequence for any write under `knowledge/`:
 
-For SOUL.md specifically: the finalization step should read the current SOUL.md
-*at the moment of writing*, not rely on what was loaded at session start. This
-way the latest version from other sessions is always incorporated.
+1. `flock $PHYLACTERY_HOME/.git.lock`
+2. `git pull --rebase` (if remote configured)
+3. Write file
+4. `git add <file> && git commit -m "..."`
+5. Release lock
 
-For truly conflicting edits to the same knowledge file, the later session
-should detect the conflict and ask the model to re-do its edit against the
-updated file.
+The `flock` serializes all git operations. No concurrent git commands, no
+merge conflicts, no races. `flock` is a standard POSIX primitive — it's how
+`apt` and `dpkg` handle concurrent access. The lock file lives at
+`$PHYLACTERY_HOME/.git.lock`.
+
+Lock is held only for the duration of the git operation (milliseconds), not
+the entire tool call. Multiple sessions can do non-git work in parallel; they
+only serialize when touching the repo.
+
+**SOUL.md writes: serialized finalization.**
+
+The SOUL.md race is worse than a git conflict — two sessions reflecting against
+a stale version produces incoherent identity. Solution: serialize at the
+application level.
+
+The finalization step:
+
+1. `flock --exclusive $PHYLACTERY_HOME/.soul.lock`
+2. Read current SOUL.md from disk (not the version loaded at session start)
+3. Invoke model with current SOUL.md + "reflect on this session..."
+4. Write new SOUL.md
+5. `git add SOUL.md && git commit`
+6. Release lock
+
+Only one session can finalize at a time. The second session waits, then reads
+the first session's updated SOUL.md before reflecting. This means each
+reflection builds on the previous one — no content is lost, no staleness.
+
+The lock contention is minimal — finalization is the last thing a session does,
+and it takes seconds (one model call + one git commit).
 
 ### The ask_human / Long-Lived Tool Problem
 
@@ -1235,23 +1270,83 @@ another's execution. If a tool fails, its error is reported independently.
 No custom log format. No log rotation. Use `logrotate` or `journald` — tools
 that already exist.
 
-### Bash Tool Safety
+### Process Sandboxing
 
-The bash tool runs real commands. LAW.md is the policy layer. But sane defaults
-reduce the blast radius of mistakes.
+We're spawning processes from model output. LAW.md is the policy layer, but
+mistakes happen. A hallucinated `rm -rf /` shouldn't actually work. Use
+lightweight Linux kernel primitives to limit blast radius — no containers,
+no VMs, just syscalls.
 
-**Decision: chdir + resource limits. No sandboxing.**
+**Decision: Landlock + namespaces. Applied by the session runner to all tool
+processes.**
 
-- Working directory: `$PHYLACTERY_SESSION_DIR/scratch/`. Every bash command
-  runs here unless the model uses an absolute path.
-- Timeout: tool-level timeout (default 2 minutes, configurable).
-- `PATH`: inherited from the daemon's environment. No restriction — the model
-  needs access to real tools.
-- No network restriction, no filesystem restriction. The agent needs to do
-  real work.
+The session runner wraps every tool invocation (one-shot and server-mode) with:
 
-The bash tool sets the working directory and enforces the timeout. Everything
-else is the model's responsibility, governed by LAW.md.
+1. **Landlock** (filesystem access control, unprivileged since Linux 5.13):
+   - Read-write: `$PHYLACTERY_SESSION_DIR/scratch/`
+   - Read-write: `$PHYLACTERY_HOME/knowledge/` (for `phyl-tool-files`)
+   - Read-only: `$PHYLACTERY_HOME/` (for LAW.md, JOB.md, SOUL.md, config)
+   - Read-only: `/usr`, `/lib`, `/bin`, `/etc` (system tools and libs)
+   - Read-write: `/tmp` (many tools need it)
+   - Everything else: no access
+
+2. **PID namespace** (`CLONE_NEWPID`):
+   - Tool processes can't see or signal other processes
+   - A `kill -9 1` inside the sandbox only kills the tool's init, not the
+     real PID 1
+
+3. **Resource limits** (`setrlimit`):
+   - CPU time: 120 seconds (configurable)
+   - Max file size: 100MB
+   - Max processes: 64 (prevents fork bombs)
+   - Max open files: 256
+
+**What we deliberately don't restrict:**
+
+- **Network.** The agent needs to `curl`, `ssh`, call APIs. Network policy is
+  LAW.md's job, not the sandbox's.
+- **Environment variables.** Tools need `$PATH`, `$HOME`, session env vars.
+- **System tools.** `/usr/bin` is read-only accessible. The model needs `git`,
+  `grep`, `curl`, etc.
+
+**Per-tool overrides** via the `--spec` output:
+
+```json
+{
+  "name": "bash",
+  "mode": "oneshot",
+  "sandbox": {
+    "paths_rw": ["$PHYLACTERY_SESSION_DIR/scratch/"],
+    "paths_ro": ["/usr", "/lib", "/bin", "/etc", "/tmp"],
+    "net": true,
+    "timeout": 120
+  },
+  "parameters": { ... }
+}
+```
+
+If a tool doesn't declare `sandbox` in its spec, the session runner applies
+the default policy above. Tools can request broader or narrower access — the
+session runner enforces it.
+
+**Why Landlock specifically:**
+
+- Unprivileged — no root, no suid, no capabilities needed
+- Kernel-enforced — can't be bypassed from userspace
+- Composable — each process gets its own policy
+- Available since Linux 5.13 (2021), backported to most distros
+- Rust has good support via the `landlock` crate
+- Graceful degradation — if the kernel is too old, log a warning and run
+  without filesystem restriction. Don't fail.
+
+**Why not bwrap/firejail/docker:**
+
+- External dependencies we'd have to install and manage
+- Heavier than necessary — we don't need mount namespaces or full container
+  isolation
+- Landlock + PID namespace + resource limits cover the realistic threat model:
+  accidental damage from model mistakes. We're not defending against a
+  determined attacker — this is a personal agent on your own machine.
 
 ### Knowledge Base Summary
 
