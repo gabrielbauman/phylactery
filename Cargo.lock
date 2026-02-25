@@ -251,6 +251,9 @@ name = "phyl-model-claude"
 version = "0.1.0"
 dependencies = [
  "phyl-core",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
