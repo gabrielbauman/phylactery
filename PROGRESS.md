@@ -196,11 +196,41 @@ Tracking implementation status against the [plan](PLAN.md).
       config loading with missing home, env var expansion, initialize
       params structure
 
-## Phase 8: Knowledge Base + Git
+## Phase 8: Knowledge Base + Git — **Complete**
 
-- [ ] Auto-commit in `phyl-tool-files` for writes under `knowledge/`
-- [ ] `search_files` tool
-- [ ] Knowledge base summary generation at session startup
+- [x] Implement auto-commit in `phyl-tool-files` for writes under `knowledge/`:
+      - Detects when `write_file` target is under `$PHYLACTERY_HOME/knowledge/`
+      - Reads `config.toml` to check `git.auto_commit` setting
+      - Acquires exclusive `flock` on `$PHYLACTERY_HOME/.git.lock`
+        (serializes with SOUL.md commits and other sessions)
+      - Runs `git add <file>` + `git commit -m "knowledge: update <path>"`
+      - Reports commit status in tool output message
+      - Gracefully handles "nothing to commit" (no-op)
+- [x] `search_files` tool (implemented in Phase 2, enhanced):
+      - Recursive substring search with file path + line number output
+      - Skips hidden files, `node_modules/`, `target/` directories
+      - Caps at 200 matches, binary files silently skipped
+      - Updated description to clarify knowledge base searchability
+      - Path parameter supports `$PHYLACTERY_HOME/knowledge/` via env
+        var expansion (`$VAR` and `${VAR}` syntax)
+- [x] Environment variable expansion in `phyl-tool-files` path resolution:
+      - `resolve_path()` expands `$VAR` and `${VAR}` references from
+        process environment before resolving relative paths
+      - Allows model to reference `$PHYLACTERY_HOME/knowledge/...` in
+        tool arguments for both reads and searches
+- [x] Knowledge base file tree generation at session startup:
+      - `phyl-run` recursively enumerates files under `knowledge/`
+      - Generates compact file tree listing (paths only, no content)
+      - Included in system prompt as `=== KNOWLEDGE SUMMARY ===` section
+      - INDEX.md excluded from listing (already shown separately)
+      - Skips hidden files/directories
+      - Agent uses `read_file` and `search_files` to access content
+        on demand, keeping context window usage minimal
+- [x] Unit tests: 18 tests for `phyl-tool-files` (env var expansion,
+      path resolution, read/write/search operations, tool specs,
+      sandbox config, config loading), 5 new tests for `phyl-run`
+      (knowledge summary generation, file collection, hidden file
+      skipping, system prompt integration)
 
 ## Phase 9: Human Attention System — **Complete**
 
