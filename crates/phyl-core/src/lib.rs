@@ -232,9 +232,19 @@ impl Default for DaemonConfig {
 }
 
 fn default_socket_path() -> String {
-    std::env::var("XDG_RUNTIME_DIR")
-        .map(|dir| format!("{}/phylactery.sock", dir))
-        .unwrap_or_else(|_| "/tmp/phylactery.sock".to_string())
+    // XDG_RUNTIME_DIR is typical on Linux; fall back to /tmp on all platforms.
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return format!("{dir}/phylactery.sock");
+    }
+
+    // macOS: use $TMPDIR (per-user, e.g. /var/folders/…/T/) when available.
+    #[cfg(target_os = "macos")]
+    if let Ok(dir) = std::env::var("TMPDIR") {
+        let dir = dir.trim_end_matches('/');
+        return format!("{dir}/phylactery.sock");
+    }
+
+    "/tmp/phylactery.sock".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -494,27 +504,23 @@ pub struct SessionInfo {
 ///
 /// Resolution order:
 /// 1. `$PHYLACTERY_HOME` if set
-/// 2. `$XDG_DATA_HOME/phylactery` (typically `~/.local/share/phylactery`)
-/// 3. `~/.phylactery` (legacy path, still supported)
+/// 2. Platform-specific data directory:
+///    - Linux: `$XDG_DATA_HOME/phylactery` (typically `~/.local/share/phylactery`)
+///    - macOS: `~/Library/Application Support/phylactery`
+/// 3. `~/.phylactery` (legacy path, still supported on all platforms)
 /// 4. `/tmp/.phylactery` (fallback when `$HOME` is unset)
 pub fn home_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("PHYLACTERY_HOME") {
         return std::path::PathBuf::from(dir);
     }
 
-    // Try XDG data directory first.
-    let xdg_path = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        Some(std::path::PathBuf::from(xdg).join("phylactery"))
-    } else if let Ok(home) = std::env::var("HOME") {
-        Some(std::path::PathBuf::from(home).join(".local/share/phylactery"))
-    } else {
-        None
-    };
+    // Try platform-specific data directory first.
+    let data_path = platform_data_dir();
 
-    if let Some(ref xdg) = xdg_path
-        && xdg.exists()
+    if let Some(ref dp) = data_path
+        && dp.exists()
     {
-        return xdg.clone();
+        return dp.clone();
     }
 
     // Legacy path.
@@ -523,9 +529,32 @@ pub fn home_dir() -> std::path::PathBuf {
         if legacy.exists() {
             return legacy;
         }
-        // Neither exists yet — prefer XDG for new installations.
-        return xdg_path.unwrap_or_else(|| std::path::PathBuf::from(home).join(".phylactery"));
+        // Neither exists yet — prefer the platform-specific path for new installations.
+        return data_path.unwrap_or_else(|| std::path::PathBuf::from(home).join(".phylactery"));
     }
 
     std::path::PathBuf::from("/tmp/.phylactery")
+}
+
+/// Returns the platform-specific data directory for new installations.
+fn platform_data_dir() -> Option<std::path::PathBuf> {
+    // Honour explicit XDG_DATA_HOME on any platform.
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        return Some(std::path::PathBuf::from(xdg).join("phylactery"));
+    }
+
+    let home = std::env::var("HOME").ok()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        Some(
+            std::path::PathBuf::from(&home)
+                .join("Library/Application Support/phylactery"),
+        )
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(std::path::PathBuf::from(&home).join(".local/share/phylactery"))
+    }
 }

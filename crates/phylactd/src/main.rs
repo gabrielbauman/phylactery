@@ -780,12 +780,14 @@ fn write_to_fifo(fifo_path: &std::path::Path, data: &str) -> Result<(), String> 
         return Err(format!("failed to open FIFO: {err}"));
     }
 
-    // Write data + newline atomically (must be < PIPE_BUF = 4096).
+    // Write data + newline atomically (must be < PIPE_BUF for atomic writes).
+    // PIPE_BUF is 4096 on Linux and 512 on macOS.
+    const PIPE_BUF: usize = if cfg!(target_os = "macos") { 512 } else { 4096 };
     let line = format!("{data}\n");
     let bytes = line.as_bytes();
-    if bytes.len() > 4096 {
+    if bytes.len() > PIPE_BUF {
         unsafe { libc::close(fd) };
-        return Err("event data exceeds PIPE_BUF (4096 bytes)".to_string());
+        return Err(format!("event data exceeds PIPE_BUF ({PIPE_BUF} bytes)"));
     }
 
     let written = unsafe { libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
