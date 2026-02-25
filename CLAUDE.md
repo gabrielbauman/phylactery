@@ -5,14 +5,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-cargo build                          # Build all crates
+cargo build                          # Build all crates (debug)
+cargo build --release                # Release build (binaries in target/release/)
 cargo build -p phyl-core             # Build just the core types library
 cargo build -p phyl                  # Build just the CLI binary
-cargo test                           # Run all tests (when tests exist)
-cargo test -p phyl-core              # Run tests for a single crate
+cargo test                           # Run all tests
+cargo test -p phyl-run               # Run tests for a single crate
+cargo test -p phyl-run -- test_name  # Run a single test by name
+cargo clippy --workspace --all-targets  # Lint (CI runs this with -Dwarnings)
+cargo fmt --all -- --check           # Check formatting
 ```
 
-No linter or formatter is configured yet. Use `cargo clippy` and `cargo fmt` if needed.
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
+
+- **check** and **test** on both `ubuntu-latest` and `macos-latest`
+- **clippy** and **fmt** on `ubuntu-latest`
+- `RUSTFLAGS=-Dwarnings` — all warnings are errors. Fix clippy lints before pushing.
+
+Requires Rust stable 1.83+ (edition 2024).
 
 ## What This Project Is
 
