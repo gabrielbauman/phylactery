@@ -34,7 +34,7 @@ Each session gets:
 - An append-only event log: `sessions/<uuid>/log.jsonl`
 - An input FIFO: `sessions/<uuid>/events` (named pipe for live injection)
 - Access to the shared knowledge base
-- Access to tools (discovered from `$PHYLACTERY_TOOLS_PATH`)
+- Access to tools (discovered from `$PATH` — any `phyl-tool-*` executable)
 
 Sessions are interactive. Write to the FIFO and the running session picks it up
 on its next loop iteration.
@@ -60,8 +60,9 @@ knowledge/
 ```
 
 The agent updates this regularly (enforced by LAW.md). Commits are automatic
-with descriptive messages. Concurrent writes from parallel sessions are handled
-by git's normal merge machinery — sessions pull before committing.
+with descriptive messages. Concurrent writes from parallel sessions are
+serialized with `flock` on `$PHYLACTERY_HOME/.git.lock` — only one git
+operation at a time. See the Git Concurrency section for details.
 
 ### LAW.md
 
@@ -219,9 +220,14 @@ response to stdout.
       "name": "bash",
       "arguments": { "command": "ls -la" }
     }
-  ]
+  ],
+  "usage": { "input_tokens": 1234, "output_tokens": 567 }
 }
 ```
+
+The `usage` field is optional. If present, the session runner uses it for
+accurate context window tracking (see Context Window Management). If absent,
+the runner falls back to `chars / 4` as a rough token estimate.
 
 That's it. `phyl-model-claude` translates this to/from whatever the `claude`
 CLI expects. Want to use Ollama? Write `phyl-model-ollama`. Same contract.
@@ -367,17 +373,16 @@ No probing. No guessing. The spec is the truth.
 | `phyl-tool-mcp` | Server | MCP servers are long-lived processes. |
 | `phyl-tool-session` | Server | Handles `ask_human` (blocks) and `done` (signals session end). |
 
-**`phyl-tool-session`** is the tool that handles session-specific operations
-that need access to the session's log and FIFO:
+**`phyl-tool-session`** handles session-level operations via NDJSON:
 
-- `ask_human`: writes a question to `log.jsonl`, blocks waiting for an answer
-  on the FIFO, returns the answer. Can block for minutes.
-- `done`: writes a done event to `log.jsonl`, returns a signal that the session
-  runner reads as "end the session."
+- `ask_human`: waits for the session runner to forward a human answer on
+  stdin, then returns it as a tool result. The session runner handles log
+  writing and FIFO reading — the tool itself does no file I/O.
+- `done`: returns `{"signal":"end_session"}` to tell the runner to finalize.
 
-It runs in server mode because `ask_human` needs to block without timing out
-the way a one-shot process would. It knows where the session log and FIFO are
-from environment variables.
+It runs in server mode because `ask_human` needs to block for minutes (waiting
+for the runner to forward an answer). It's pure stdin/stdout — no filesystem
+access needed. See the `ask_human` section under Bridges for the full flow.
 
 Tools receive environment variables for context:
 
@@ -386,7 +391,7 @@ Tools receive environment variables for context:
 | `PHYLACTERY_SESSION_ID` | UUID of the current session |
 | `PHYLACTERY_SESSION_DIR` | Absolute path to session working directory |
 | `PHYLACTERY_KNOWLEDGE_DIR` | Absolute path to knowledge base |
-| `PHYLACTERY_ROOT` | Absolute path to phylactery repo root |
+| `PHYLACTERY_HOME` | Absolute path to agent home directory |
 
 ### Event Log Format
 
@@ -423,9 +428,10 @@ actions, or just report results. Rather than build one UI, we build a
 
 ### The Attention Feed
 
-Sessions can request human attention. The model does this via an `ask_human`
-tool (built-in). When called, the session emits a question event to the log
-and blocks, waiting for a response on its FIFO.
+Sessions can request human attention. The model does this via the `ask_human`
+tool (provided by `phyl-tool-session`). When the model calls it, the session
+runner writes a question event to the log and blocks, waiting for a response
+on the FIFO.
 
 Log event:
 
@@ -479,8 +485,8 @@ Line-based. Works over SSH. No TUI framework.
 
 ### Signal Bridge: `phyl-bridge-signal`
 
-A separate program (likely Python, to use `signal-cli` or `signal-cli-rest-api`)
-that:
+A Rust binary in the workspace. Talks to `signal-cli` (or
+`signal-cli-rest-api`) as a subprocess. It:
 
 1. Connects to `GET /feed` on the daemon's Unix socket
 2. For each attention event, sends a Signal message to the configured phone
@@ -533,21 +539,23 @@ number. All other messages are ignored.
 
 The bridge protocol is simple enough that adding new transports is trivial:
 
-| Bridge | Transport | Effort |
-|--------|-----------|--------|
-| `phyl watch` | Terminal (built-in CLI) | Built-in |
-| `phyl-bridge-signal` | Signal Messenger | ~150 lines Python |
-| `phyl-bridge-matrix` | Matrix chat room | ~150 lines Python |
-| `phyl-bridge-email` | Email (IMAP/SMTP) | ~200 lines Python |
-| `phyl-bridge-telegram` | Telegram bot | ~100 lines Python |
+| Bridge | Transport | Notes |
+|--------|-----------|-------|
+| `phyl watch` | Terminal (built-in CLI) | Built into `phyl` binary |
+| `phyl-bridge-signal` | Signal Messenger | Rust, in the workspace |
+| `phyl-bridge-matrix` | Matrix chat room | Any language (small script) |
+| `phyl-bridge-email` | Email (IMAP/SMTP) | Any language (small script) |
+| `phyl-bridge-telegram` | Telegram bot | Any language (small script) |
 | `phyl-bridge-ntfy` | ntfy.sh push notifications (one-way) | ~30 lines shell |
 
-Bridges are not part of the core Rust workspace. They're scripts in a
-`bridges/` directory. They can be installed and run independently.
+`phyl-bridge-signal` is a Rust binary in the Cargo workspace because Signal is
+the primary external interface and we want reliability. Other bridges are
+standalone programs in any language — the bridge protocol is just SSE + HTTP.
+They can be installed and run independently.
 
 ### The `ask_human` Tool
 
-This is a built-in tool available to every session. When the model needs human
+Provided by `phyl-tool-session` (server mode). When the model needs human
 input, it calls this tool:
 
 ```json
@@ -561,15 +569,31 @@ input, it calls this tool:
 }
 ```
 
-The session runner:
+**Flow — the session runner is the sole FIFO reader:**
 
-1. Writes a `question` event to `log.jsonl` (with a unique question ID)
-2. Blocks, waiting for an `answer` event on the FIFO
-3. Returns the human's answer to the model as the tool result
+1. Session runner dispatches the tool call to `phyl-tool-session` via NDJSON
+2. Session runner writes a `question` event to `log.jsonl` (with a unique
+   question ID)
+3. Session runner enters a `select!` loop: read FIFO **and** read
+   `phyl-tool-session` stdout simultaneously
+4. When an answer event arrives on the FIFO, session runner forwards it to
+   `phyl-tool-session` via its NDJSON stdin:
+   `{"id":"tc_1","answer":"yes"}`
+5. `phyl-tool-session` receives the forwarded answer and returns the tool
+   result: `{"id":"tc_1","output":"Human answered: yes"}`
+6. Session runner adds the tool result to history and continues
+
+**Why the session runner forwards answers instead of letting the tool read the
+FIFO:** A FIFO has a single read end. If both the session runner and
+`phyl-tool-session` read from it, events would be randomly delivered to one or
+the other — a race condition. The session runner is the sole reader and routes
+events to the appropriate destination (user messages → history, answer events →
+`phyl-tool-session`).
 
 If no answer arrives within a timeout (configurable, default 30 minutes), the
-tool returns `"No response from human — timed out"` and the model decides how
-to proceed.
+session runner sends a timeout signal to `phyl-tool-session`:
+`{"id":"tc_1","answer":null,"timeout":true}` — the tool returns
+`"No response from human — timed out"` and the model decides how to proceed.
 
 ---
 
@@ -757,48 +781,69 @@ straightforward:
 ```
 phyl-run --session-dir ./sessions/<uuid> --prompt "do the thing"
 
-1. Read config.toml
-2. Read LAW.md → prepend to system prompt (the rules)
-3. Read JOB.md → append to system prompt (the role)
-4. Read SOUL.md → append to system prompt (the identity)
-5. Discover tools:
-   for each phyl-tool-* in $tools_path:
-     run `phyl-tool-X --spec` → collect tool schemas
-6. Open events FIFO for reading (non-blocking)
-7. Initialize history = [system_prompt, user_prompt]
-8. Loop:
-   a. Build model request: { messages: history, tools: tool_schemas }
-   b. Pipe request to model adapter: echo $REQ | phyl-model-claude
-   c. Parse model response
-   d. Append assistant message to history
-   e. Write to log.jsonl
-   f. If tool_calls present:
-      for each tool_call:
-        pipe call to appropriate phyl-tool-* binary
-        append tool result to history
-        write to log.jsonl
-      continue loop (goto a)
-   g. If no tool_calls:
-      check FIFO for new events
-      if events: append as user messages, continue loop
-      if no events: wait briefly, check again
-      if done tool was called: goto finalize
-   h. Check timeout → exit if exceeded
-9. Finalize:
-   a. Invoke model one final time with:
-      "Session complete. Update SOUL.md: reflect on this session —
-       what happened, what you learned, how you feel about it,
-       and who you are becoming. Then call done."
-   b. Agent writes to SOUL.md (via write_file tool), git auto-commits
-   c. Agent calls done tool with session summary
-10. Write final summary to log
-11. Exit
+ 1. Redirect stderr to sessions/<uuid>/stderr.log
+ 2. Write PID to sessions/<uuid>/pid
+ 3. Read config.toml
+ 4. Read LAW.md, JOB.md, SOUL.md, knowledge/INDEX.md
+ 5. Assemble system prompt from template (see System Prompt Template)
+ 6. Discover tools:
+    for each phyl-tool-* on $PATH:
+      run `phyl-tool-X --spec` → collect tool schemas + mode
+ 7. Start server-mode tools:
+    for each tool with mode=server:
+      spawn `phyl-tool-X --serve` (with sandbox from spec if declared)
+      keep stdin/stdout handles for NDJSON communication
+ 8. Create events FIFO, open with O_RDWR | O_NONBLOCK
+ 9. Initialize history = [system_prompt, user_prompt]
+10. Loop:
+    a. Build model request: { messages: history, tools: tool_schemas }
+    b. Pipe to model adapter stdin, read response from stdout
+    c. Parse model response → append assistant message to history
+    d. Write assistant entry to log.jsonl
+    e. If response has tool_calls:
+       - One-shot tools: spawn phyl-tool-X per call (parallel, sandboxed
+         per spec), pipe call on stdin, read result from stdout
+       - Server-mode tools: send NDJSON request on existing stdin handle
+       - select! on: all pending tool stdout + FIFO
+         (FIFO answers are forwarded to the waiting server-mode tool)
+       - Collect all tool results, append to history, write to log.jsonl
+       - If any result has signal "end_session": goto finalize
+       - Else: continue loop (goto a)
+    f. If no tool_calls (model just spoke):
+       - Poll FIFO for new events
+       - If user events: append as user messages, continue loop
+       - If nothing after brief wait: the model is done talking and no
+         new input has arrived — this shouldn't happen in normal flow
+         (model should call done), treat as implicit done → goto finalize
+    g. Check cumulative timeout → exit with error if exceeded
+11. Finalize (SOUL.md reflection):
+    a. Close stdin on server-mode tools → they exit
+    b. flock --exclusive $PHYLACTERY_HOME/.soul.lock
+    c. Re-read SOUL.md from disk (not the version loaded at session start)
+    d. Invoke model adapter ONE more time with:
+       - history (for context on what happened this session)
+       - Current SOUL.md content
+       - Prompt: "Reflect on this session. Here is your current SOUL.md.
+         Output an updated version — under 2000 words, present tense,
+         living self-portrait not a journal. Output ONLY the new content."
+       - tools: [] (no tools — just text output)
+    e. Write model output to SOUL.md on disk
+    f. flock --exclusive $PHYLACTERY_HOME/.git.lock
+    g. git add SOUL.md && git commit -m "soul: reflect on session <uuid>"
+    h. Release .git.lock
+    i. Release .soul.lock
+    j. If SOUL.md > 3000 words: truncate (keep first + last sections), warn
+12. Write final done entry to log.jsonl
+13. Exit (clean up FIFO, remove PID file)
 ```
 
-Each model invocation and tool call is a **separate process**. No long-lived
-connections. No state leaks. If the model adapter crashes, that invocation
-fails and the session can retry or report the error. If a tool hangs, it can be
-killed independently.
+Each model invocation is a **separate process**. One-shot tool calls are
+separate processes too. Server-mode tools (phyl-tool-session, phyl-tool-mcp)
+are long-lived but isolated — they communicate only via NDJSON on stdin/stdout.
+If the model adapter crashes, that invocation fails and the session can retry
+or report the error. If a one-shot tool hangs, it can be killed independently.
+If a server-mode tool dies, the session runner detects the broken pipe and
+fails gracefully.
 
 ---
 
@@ -901,10 +946,11 @@ The agentic loop, testable without a daemon.
 
 - [ ] Implement `phyl-tool-session` (server mode tool):
       - `--spec`: return schemas for `ask_human` and `done`
-      - `--serve`: run NDJSON server loop
-      - `ask_human` handler: write question event to log.jsonl, block on FIFO
-        for answer, return answer to model (timeout: configurable, default 30 min)
-      - `done` handler: write done event to log.jsonl, signal session end
+      - `--serve`: run NDJSON server loop on stdin/stdout
+      - `ask_human` handler: wait for forwarded answer on stdin (the session
+        runner handles log writing, FIFO reading, and answer forwarding)
+      - `done` handler: return `{"signal":"end_session"}`
+      - No file I/O — pure NDJSON
 - [ ] Add `GET /feed` SSE endpoint to daemon:
       - Tail all active session logs
       - Filter for attention-worthy events (question, done, error)
@@ -1055,11 +1101,17 @@ reflection builds on the previous one — no content is lost, no staleness.
 The lock contention is minimal — finalization is the last thing a session does,
 and it takes seconds (one model call + one git commit).
 
+**Lock ordering:** When both locks are needed (finalization commits SOUL.md),
+always acquire `.soul.lock` first, then `.git.lock` inside it. No code
+acquires them in the reverse order, so deadlock is impossible. `phyl-tool-files`
+only uses `.git.lock`. The session runner's finalization uses `.soul.lock`
+then `.git.lock`.
+
 ### The ask_human / Long-Lived Tool Problem
 
 `ask_human` doesn't fit the one-shot tool model because it needs to block for
-minutes and interact with the session's log and FIFO. MCP has a similar
-problem — MCP servers are stateful long-lived processes.
+minutes waiting for a human response. MCP has a similar problem — MCP servers
+are stateful long-lived processes.
 
 **Decision: Unified server mode protocol.** Rather than special-casing
 individual tools in the session runner, the tool protocol itself supports two
@@ -1079,6 +1131,8 @@ transparently — no special cases.
 - `log.jsonl` — conversation log
 - `events` — named pipe (FIFO) for input
 - `scratch/` — arbitrary files the agent creates during the session
+- `pid` — PID file for daemon crash recovery
+- `stderr.log` — operational log (phyl-run redirects its own stderr here)
 
 **Cleanup policy:** Session dirs for completed sessions are retained for 7 days
 (configurable), then deleted by the daemon. The daemon checks on startup and
@@ -1123,13 +1177,17 @@ The threshold and model context size are configured per-model in `config.toml`:
 
 ```toml
 [model]
-command = "phyl-model-claude"
 context_window = 200000        # tokens (approximate)
 compress_at = 0.8              # compress when 80% full
 ```
 
-Token counting is approximate (chars / 4 as a rough heuristic, or the model
-adapter can report token counts in its response).
+The model adapter binary is specified in `[session].model`, not here. This
+section configures context window behavior for whatever adapter is in use.
+
+Token counting uses the model adapter's `usage` field if available (accurate),
+or falls back to `chars / 4` as a rough heuristic. The session runner tracks
+cumulative token usage across the conversation and triggers compression when
+the threshold is reached.
 
 ### Daemon Crash Recovery
 
@@ -1171,11 +1229,13 @@ to route replies.
 | Model adapter returns invalid JSON | Log error, retry once, then fail session |
 | Model adapter times out (>5 min) | Kill process, retry once, then fail |
 | Model adapter exits non-zero | Log stderr, retry once, then fail |
-| Tool returns invalid JSON | Return error string to model, let it recover |
-| Tool times out (>2 min) | Kill process, return timeout error to model |
-| Tool exits non-zero | Return stderr to model as error |
+| One-shot tool returns invalid JSON | Return error string to model, let it recover |
+| One-shot tool times out (>2 min) | Kill process, return timeout error to model |
+| One-shot tool exits non-zero | Return stderr to model as error |
+| Server-mode tool pipe breaks | Return error to model for pending calls, disable tool for session |
 | FIFO write fails | Fall back to API endpoint for event injection |
 | Git commit fails after retries | Log error, continue session without committing |
+| Finalization model call fails | Log warning, skip SOUL.md update, still exit cleanly |
 
 Model failures fail the session after one retry. Tool failures are reported to
 the model as errors — the model can decide to retry, try a different approach,
@@ -1237,11 +1297,10 @@ Models often return multiple tool_calls in a single response (e.g.,
 "read these 3 files simultaneously"). These should run in parallel when
 possible.
 
-**Decision: Parallel by default, sequential when tools share a binary.**
+**Decision: All tool calls from a single model response run in parallel.**
 
-- One-shot tool calls to *different* binaries: run in parallel (`tokio::join!`)
-- One-shot tool calls to the *same* binary: run in parallel (each is a
-  separate process, no shared state)
+- One-shot tool calls: spawn all in parallel (`tokio::join!`), each is a
+  separate process with no shared state
 - Server-mode tool calls: send all requests, then collect all responses
   (the NDJSON `id` field handles multiplexing)
 
@@ -1256,14 +1315,15 @@ another's execution. If a tool fails, its error is reported independently.
 
 **Decision: stderr is the log. Follow Unix convention.**
 
-- All binaries log to stderr. The daemon captures child stderr.
+- All binaries log to stderr.
+- `phyl-run` redirects its own stderr to `sessions/<uuid>/stderr.log` at
+  startup (via `dup2`). This makes it independent of the daemon — if the daemon
+  crashes, `phyl-run` keeps logging. No pipes to break, no SIGPIPE deaths.
 - `phyl-run` writes operational messages (tool dispatch, model invocations,
   timing) to stderr, not to `log.jsonl`. The JSONL log is the conversation;
   stderr is the operational trace.
 - `phylactd` logs to stderr. Run under systemd and it goes to journald
   automatically. Run in a terminal and you see it live.
-- Per-session stderr is captured by the daemon and written to
-  `sessions/<uuid>/stderr.log` for debugging.
 - Log level controlled by `RUST_LOG` env var (standard `env_logger` / `tracing`
   convention). Default: `info`.
 
@@ -1277,29 +1337,50 @@ mistakes happen. A hallucinated `rm -rf /` shouldn't actually work. Use
 lightweight Linux kernel primitives to limit blast radius — no containers,
 no VMs, just syscalls.
 
-**Decision: Landlock + namespaces. Applied by the session runner to all tool
-processes.**
+**Decision: Opt-in per tool via the `sandbox` field in `--spec`. The session
+runner enforces whatever the spec declares.**
 
-The session runner wraps every tool invocation (one-shot and server-mode) with:
+The sandbox is primarily for tools that execute model-generated input —
+`phyl-tool-bash` above all. Trusted tools like `phyl-tool-session` and
+`phyl-tool-mcp` (our own code) don't need sandboxing and don't declare it.
+
+A tool opts into sandboxing by including a `sandbox` object in its `--spec`:
+
+```json
+{
+  "name": "bash",
+  "mode": "oneshot",
+  "sandbox": {
+    "paths_rw": ["$PHYLACTERY_SESSION_DIR/scratch/", "/tmp"],
+    "paths_ro": ["/usr", "/lib", "/bin", "/etc"],
+    "net": true,
+    "max_cpu_seconds": 120,
+    "max_file_bytes": 104857600,
+    "max_procs": 64,
+    "max_fds": 256
+  },
+  "parameters": { ... }
+}
+```
+
+If `sandbox` is absent from the spec, the tool runs unsandboxed.
+
+**What the session runner enforces (between `fork` and `exec`):**
 
 1. **Landlock** (filesystem access control, unprivileged since Linux 5.13):
-   - Read-write: `$PHYLACTERY_SESSION_DIR/scratch/`
-   - Read-write: `$PHYLACTERY_HOME/knowledge/` (for `phyl-tool-files`)
-   - Read-only: `$PHYLACTERY_HOME/` (for LAW.md, JOB.md, SOUL.md, config)
-   - Read-only: `/usr`, `/lib`, `/bin`, `/etc` (system tools and libs)
-   - Read-write: `/tmp` (many tools need it)
-   - Everything else: no access
+   - Applies the `paths_rw` and `paths_ro` lists from the spec
+   - Everything not listed: no access
+   - Environment variables are expanded before applying
 
-2. **PID namespace** (`CLONE_NEWPID`):
+2. **PID namespace** (`CLONE_NEWPID`, requires `user.max_user_namespaces > 0`):
    - Tool processes can't see or signal other processes
-   - A `kill -9 1` inside the sandbox only kills the tool's init, not the
-     real PID 1
+   - A `kill -9 1` inside the sandbox only kills the tool's init
+   - Graceful degradation: if user namespaces are disabled (some hardened
+     kernels), log a warning and skip. PID isolation is defense-in-depth,
+     not essential.
 
 3. **Resource limits** (`setrlimit`):
-   - CPU time: 120 seconds (configurable)
-   - Max file size: 100MB
-   - Max processes: 64 (prevents fork bombs)
-   - Max open files: 256
+   - Applies `max_cpu_seconds`, `max_file_bytes`, `max_procs`, `max_fds`
 
 **What we deliberately don't restrict:**
 
@@ -1309,25 +1390,33 @@ The session runner wraps every tool invocation (one-shot and server-mode) with:
 - **System tools.** `/usr/bin` is read-only accessible. The model needs `git`,
   `grep`, `curl`, etc.
 
-**Per-tool overrides** via the `--spec` output:
+**Which built-in tools declare sandboxing:**
+
+| Tool | Sandboxed | Why |
+|------|-----------|-----|
+| `phyl-tool-bash` | Yes (strict) | Executes model-generated shell commands |
+| `phyl-tool-files` | Yes (needs knowledge/ rw, .git/ rw) | Writes model-chosen paths, runs git |
+| `phyl-tool-session` | No | Only does stdin/stdout NDJSON, no file I/O |
+| `phyl-tool-mcp` | No | Spawns trusted MCP servers, needs broad access |
+
+`phyl-tool-files` declares its own sandbox to limit writes to the knowledge
+base and scratch directory:
 
 ```json
 {
-  "name": "bash",
-  "mode": "oneshot",
   "sandbox": {
-    "paths_rw": ["$PHYLACTERY_SESSION_DIR/scratch/"],
-    "paths_ro": ["/usr", "/lib", "/bin", "/etc", "/tmp"],
-    "net": true,
-    "timeout": 120
-  },
-  "parameters": { ... }
+    "paths_rw": [
+      "$PHYLACTERY_SESSION_DIR/scratch/",
+      "$PHYLACTERY_HOME/knowledge/",
+      "$PHYLACTERY_HOME/.git/",
+      "$PHYLACTERY_HOME/.git.lock"
+    ],
+    "paths_ro": ["$PHYLACTERY_HOME/", "/usr", "/lib", "/bin", "/etc"],
+    "net": false,
+    "max_cpu_seconds": 30
+  }
 }
 ```
-
-If a tool doesn't declare `sandbox` in its spec, the session runner applies
-the default policy above. Tools can request broader or narrower access — the
-session runner enforces it.
 
 **Why Landlock specifically:**
 
@@ -1364,6 +1453,10 @@ If it gets stale, the agent can regenerate it from `find knowledge/ -name '*.md'
 This is simpler than LLM-generated summaries and more reliable than automated
 file listings. The agent curates its own index.
 
+INDEX.md is included in every system prompt, so it should stay compact — under
+500 words. Use hierarchical listing (`## contacts/ — 12 files`), not per-file
+descriptions. LAW.md should instruct the agent to keep it brief.
+
 ---
 
 ## What This Is Not
@@ -1372,7 +1465,8 @@ file listings. The agent curates its own index.
 - **Not multi-user.** One human, one agent, one machine.
 - **Not cloud-native.** It's local processes on a Linux box.
 - **Not a framework.** You don't import it. You run it.
-- **Not sandboxed.** The bash tool runs real commands. LAW.md is policy, not
-  a security boundary.
+- **Not a security boundary.** Landlock sandboxing limits accidental damage
+  from model mistakes, but this is a personal agent on your own machine, not a
+  multi-tenant system. LAW.md is policy. The sandbox is a seatbelt.
 - **Not a daemon that must be running.** You can run `phyl-run` directly to
   test a session without the daemon.
