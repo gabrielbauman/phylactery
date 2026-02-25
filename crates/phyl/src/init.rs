@@ -121,6 +121,12 @@ auto_commit = true
 # name = "filesystem"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+
+# Signal Messenger bridge (used by phyl-bridge-signal)
+# [bridge.signal]
+# phone = "+1234567890"           # Agent's registered Signal number
+# owner = "+0987654321"           # Your Signal number (only accept from this)
+# signal_cli = "signal-cli"       # Path to signal-cli binary
 "#
     );
 
