@@ -24,14 +24,23 @@ Tracking implementation status against the [plan](PLAN.md).
 - [x] Test from command line:
       `echo '{"name":"bash","arguments":{"command":"echo hi"}}' | phyl-tool-bash`
 
-## Phase 3: Model Adapter
+## Phase 3: Model Adapter — **Complete**
 
-- [ ] Implement `phyl-model-claude`:
+- [x] Implement `phyl-model-claude`:
       - Read `ModelRequest` from stdin
-      - Translate to claude CLI invocation (`claude --print --output-format json`)
-      - Parse claude's response
+      - Build system prompt from system messages + tool definitions (with
+        `<tool_call>` XML format instructions)
+      - Build user prompt from conversation history (multi-turn support with
+        `<conversation_history>` formatting)
+      - Invoke `claude --print --output-format json --tools "" --no-session-persistence`
+      - Parse claude CLI JSON response (`result`, `is_error` fields)
+      - Extract `<tool_call>` blocks from response text into structured `ToolCall` objects
       - Write `ModelResponse` to stdout
-- [ ] Test from command line:
+- [x] Environment variable support: `PHYL_CLAUDE_CLI` (binary path),
+      `PHYL_CLAUDE_MODEL` (model override)
+- [x] Unit tests (20 tests): tool call extraction, system prompt building,
+      user prompt formatting, response parsing
+- [x] Test from command line:
       `echo '{"messages":[{"role":"user","content":"say hi"}],"tools":[]}' | phyl-model-claude`
 
 ## Phase 4: Session Runner
