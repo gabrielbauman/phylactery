@@ -18,7 +18,7 @@ cron — anything that can talk to the daemon.
 Each session gets:
 
 - A UUID
-- A git-tracked working directory: `sessions/<uuid>/`
+- A working directory (gitignored): `sessions/<uuid>/`
 - An append-only event log: `sessions/<uuid>/log.jsonl`
 - An input FIFO: `sessions/<uuid>/events` (named pipe for live injection)
 - Access to the shared knowledge base
@@ -158,8 +158,6 @@ it through LAW.md (rules) or JOB.md (role), not by editing SOUL.md directly.
 | `phyl-model-claude` | Model adapter for Claude CLI. | Rust (or shell) |
 | `phyl-tool-bash` | Tool: execute shell commands. | Rust (or shell) |
 | `phyl-tool-files` | Tool: read/write/search files. | Rust (or shell) |
-| `phyl-tool-done` | Tool: end a session. | Shell script |
-| `phyl-tool-ask` | Tool: ask the human a question. Blocks until answered. | Rust |
 | `phyl-tool-mcp` | Tool: bridge to any MCP server. | Rust |
 | `phyl-bridge-signal` | Bridge: two-way Signal Messenger interface. | Rust |
 
@@ -542,14 +540,9 @@ phylactery/
 │   ├── phyl-tool-mcp/          # MCP bridge tool
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs
-│   ├── phyl-tool-ask/          # Ask-human tool (blocks for human response)
-│   │   ├── Cargo.toml
-│   │   └── src/main.rs
 │   └── phyl-bridge-signal/     # Signal Messenger bridge
 │       ├── Cargo.toml
 │       └── src/main.rs
-├── tools/
-│   └── phyl-tool-done          # Shell script: ends a session
 ├── knowledge/                  # Git-tracked knowledge base
 │   └── .gitkeep
 └── sessions/                   # Per-session working directories (gitignored)
@@ -693,9 +686,11 @@ The agentic loop, testable without a daemon.
 - [ ] Implement `phyl-run`:
       - Parse args (session dir, prompt)
       - Discover tools from path
-      - Build system prompt from LAW.md + JOB.md
-      - Run the agentic loop
+      - Build system prompt from LAW.md + JOB.md + SOUL.md + knowledge/INDEX.md
+      - Run the agentic loop (with built-in ask_human and done handlers)
       - Write to log.jsonl
+      - Finalization step: SOUL.md reflection + done
+      - PID file for daemon crash recovery
 - [ ] Create FIFO, read events from it
 - [ ] Test: `mkdir -p sessions/test && phyl-run --session-dir sessions/test --prompt "what is 2+2"`
 
@@ -741,10 +736,11 @@ The agentic loop, testable without a daemon.
 
 ### Phase 9: Human Attention System
 
-- [ ] Implement `phyl-tool-ask`:
-      - On `--spec`: return ask_human tool schema
-      - On invocation: write question event to log, block waiting for answer
-        on a response file/FIFO, return answer as tool output
+- [ ] Implement `ask_human` as built-in handler in session runner:
+      - Write question event to log.jsonl with unique ID
+      - Block on FIFO waiting for answer event
+      - Return answer to model as tool result
+      - Handle timeout (configurable, default 30 min)
 - [ ] Add `GET /feed` SSE endpoint to daemon:
       - Tail all active session logs
       - Filter for attention-worthy events (question, done, error)
@@ -843,6 +839,216 @@ and grep are enough.
 - Streamable (tail -f works)
 - Each line is independently parseable (no framing issues)
 - Standard format, tooling everywhere
+
+---
+
+## Open Design Questions
+
+Issues that need concrete answers before or during implementation.
+
+### Git Concurrency
+
+Multiple sessions can write to `knowledge/` and `SOUL.md` simultaneously.
+Git doesn't have file-level locking. Strategy:
+
+**Decision: Pull-rebase-commit retry loop.** Before any commit, the tool:
+
+1. `git pull --rebase`
+2. `git add <file>`
+3. `git commit -m "..."`
+4. If commit fails (conflict): resolve automatically for append-only files
+   (SOUL.md, journal entries), or retry for others
+5. Retry up to 3 times
+
+For SOUL.md specifically: the finalization step should read the current SOUL.md
+*at the moment of writing*, not rely on what was loaded at session start. This
+way the latest version from other sessions is always incorporated.
+
+For truly conflicting edits to the same knowledge file, the later session
+should detect the conflict and ask the model to re-do its edit against the
+updated file.
+
+### The ask_human Protocol Problem
+
+`ask_human` doesn't fit the simple tool protocol because it needs to:
+
+1. Write to the session log (not just stdout)
+2. Block for a long time waiting for human input
+3. Read from the session's event stream
+
+**Decision: Make ask_human a special case in the session runner, not a
+separate binary.** When the session runner sees a tool call named `ask_human`,
+it handles it directly rather than dispatching to an external process:
+
+1. Writes a `question` event to `log.jsonl`
+2. Waits on the FIFO for an `answer` event
+3. Returns the answer as the tool result
+
+This is the one exception to "tools are external processes." The alternative
+(having the tool binary communicate back to the session runner via side
+channels) is more complex and gains nothing. `done` works the same way — it's
+a signal to the session runner, not an external binary.
+
+Revised tool split:
+
+| Handled by session runner (built-in) | External binaries |
+|---------------------------------------|-------------------|
+| `ask_human` | `phyl-tool-bash` |
+| `done` | `phyl-tool-files` |
+| | `phyl-tool-mcp` |
+
+### Session Directory Lifecycle
+
+**Decision: Session working directories are NOT git-tracked.** They live under
+`sessions/` which is gitignored. They contain:
+
+- `log.jsonl` — conversation log
+- `events` — named pipe (FIFO) for input
+- `scratch/` — arbitrary files the agent creates during the session
+
+**Cleanup policy:** Session dirs for completed sessions are retained for 7 days
+(configurable), then deleted by the daemon. The daemon checks on startup and
+periodically. Session logs can be archived before deletion (e.g., moved to
+`knowledge/sessions/` if the agent decides they're worth keeping).
+
+### MCP Server Lifecycle
+
+MCP servers are long-lived processes. The spawn-per-invocation tool model
+doesn't fit.
+
+**Decision: `phyl-tool-mcp` is a long-running sidecar, not a per-invocation
+tool.** It starts at session begin and stops at session end. The session runner
+starts it alongside the session and communicates with it via its stdin/stdout.
+
+Alternative considered: have the daemon manage MCP servers globally. Rejected
+because it couples the daemon to MCP knowledge, and different sessions might
+need different MCP servers.
+
+For the tool protocol, `phyl-tool-mcp` still responds to `--spec` like any
+other tool (starts MCP servers, collects schemas, prints them, exits). But on
+invocation, instead of spawning fresh, the session runner keeps a handle to a
+running `phyl-tool-mcp` process and pipes tool calls to it. This is a second
+exception to the "each tool invocation is a fresh process" rule.
+
+Invocation protocol for long-running tools:
+
+```sh
+# Start once:
+phyl-tool-mcp --server < pipe_in > pipe_out
+
+# Send calls (newline-delimited JSON):
+echo '{"name":"brave_search","arguments":{"query":"..."}}' > pipe_in
+
+# Read results (newline-delimited JSON):
+read result < pipe_out
+```
+
+Tools that support `--server` mode run as long-lived processes. Tools that
+don't are invoked per-call as before. The session runner checks for `--server`
+support and uses the appropriate mode.
+
+### FIFO Handling
+
+Named pipes are tricky. Concrete strategy:
+
+1. Session runner creates the FIFO with `mkfifo`
+2. Opens it with `O_RDWR | O_NONBLOCK` — this prevents blocking on open
+   (opening read-only blocks until a writer exists, and vice versa)
+3. Uses `poll()` or `epoll` to check for data alongside other work
+4. Each line written to the FIFO is a complete JSON object
+5. Writers must write atomically (single `write()` call, message < PIPE_BUF
+   bytes = 4096 on Linux) to prevent interleaving
+6. If a message exceeds PIPE_BUF, writers should use the API endpoint instead
+
+### Context Window Management
+
+Conversations will eventually exceed the model's context limit.
+
+**Decision: Summarize and truncate.** When the message history exceeds a
+configurable threshold (e.g., 80% of the model's context window):
+
+1. Take the oldest N messages (excluding the system prompt)
+2. Ask the model: "Summarize this conversation so far in 2-3 paragraphs"
+3. Replace those N messages with a single user message containing the summary
+4. Continue with the compressed history
+
+The threshold and model context size are configured per-model in `config.toml`:
+
+```toml
+[model]
+command = "phyl-model-claude"
+context_window = 200000        # tokens (approximate)
+compress_at = 0.8              # compress when 80% full
+```
+
+Token counting is approximate (chars / 4 as a rough heuristic, or the model
+adapter can report token counts in its response).
+
+### Daemon Crash Recovery
+
+**Decision: PID file + session dir scanning.**
+
+- Each `phyl-run` process writes its PID to `sessions/<uuid>/pid`
+- On startup, the daemon scans `sessions/` for dirs with a `pid` file
+- For each, check if the process is still running (`kill -0`)
+- If running: re-adopt it (start tailing its log)
+- If dead: mark session as `crashed`, leave dir for inspection
+- The daemon itself writes its PID to `$XDG_RUNTIME_DIR/phylactd.pid`
+
+### Session Resumption
+
+**Decision: Not in v1.** If `phyl-run` crashes, the session is marked as
+crashed. A new session can be started with the same prompt. The crashed
+session's `log.jsonl` is available for inspection but not automatic recovery.
+
+Future: replay `log.jsonl` to reconstruct history and resume. The log format
+supports this — it contains the full conversation.
+
+### Signal Disambiguation
+
+When multiple sessions have pending questions, the Signal bridge needs a way
+to route replies.
+
+**Decision: Session tags + reply quoting.**
+
+- Each Signal message includes a short session tag: `[3a7f]`
+- If only one session is pending, any reply goes to it
+- If multiple are pending, the user prefixes with the tag: `3a7f yes`
+- If the user replies without a tag and multiple are pending, the bridge asks:
+  "Which session? [3a7f] checking email, [91b2] updating docs"
+
+### Error Handling
+
+| Failure | Response |
+|---------|----------|
+| Model adapter returns invalid JSON | Log error, retry once, then fail session |
+| Model adapter times out (>5 min) | Kill process, retry once, then fail |
+| Model adapter exits non-zero | Log stderr, retry once, then fail |
+| Tool returns invalid JSON | Return error string to model, let it recover |
+| Tool times out (>2 min) | Kill process, return timeout error to model |
+| Tool exits non-zero | Return stderr to model as error |
+| FIFO write fails | Fall back to API endpoint for event injection |
+| Git commit fails after retries | Log error, continue session without committing |
+
+Model failures fail the session after one retry. Tool failures are reported to
+the model as errors — the model can decide to retry, try a different approach,
+or ask the human.
+
+### Knowledge Base Summary
+
+The model needs to know what's in the knowledge base without reading every file.
+
+**Decision: `knowledge/INDEX.md` maintained by the agent.**
+
+LAW.md should instruct the agent to maintain a `knowledge/INDEX.md` file — a
+table of contents listing what's in the knowledge base and when it was last
+updated. This file is included in the system prompt (after SOUL.md).
+
+The agent updates INDEX.md as part of its normal knowledge base maintenance.
+If it gets stale, the agent can regenerate it from `find knowledge/ -name '*.md'`.
+
+This is simpler than LLM-generated summaries and more reliable than automated
+file listings. The agent curates its own index.
 
 ---
 
