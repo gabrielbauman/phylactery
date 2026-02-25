@@ -1,7 +1,7 @@
 //! `phyl-listen` — Incoming event listener. Three listener types:
 //! - Webhooks (`[[listen.hook]]`) — HTTP POST on a TCP port, HMAC-SHA256 verification
 //! - SSE subscriptions (`[[listen.sse]]`) — persistent connections to event streams
-//! - File watches (`[[listen.watch]]`) — inotify-based, glob filtering, debouncing
+//! - File watches (`[[listen.watch]]`) — cross-platform (notify), glob filtering, debouncing
 //!
 //! All create sessions via the daemon API.
 

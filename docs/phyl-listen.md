@@ -78,7 +78,7 @@ rate_limit = 5
 
 ## File Watches
 
-Watch files or directories for changes using inotify and create sessions when matching events occur. Turn a directory into an inbox.
+Watch files or directories for changes and create sessions when matching events occur. Turn a directory into an inbox. Uses the [`notify`](https://crates.io/crates/notify) crate for cross-platform support (inotify on Linux, FSEvents on macOS).
 
 ```toml
 [[listen.watch]]
@@ -93,8 +93,8 @@ prompt = "A new file appeared in the inbox. Read it and process the contents."
 
 ### Features
 
-- **inotify-based** for efficient kernel-level monitoring (Linux)
-- **Recursive watching** with auto-add for new subdirectories
+- **Cross-platform** kernel-level monitoring (inotify on Linux, FSEvents on macOS)
+- **Recursive watching** of directory trees
 - **Event types**: `create`, `modify`, `delete`, `move_to`, `move_from`
 - **Glob filtering**: only trigger on matching filenames
 - **Debouncing**: coalesce rapid changes (editors often create multiple events per save)

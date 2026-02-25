@@ -1,12 +1,12 @@
-//! File watch listener — inotify-based, with glob filtering, debouncing,
-//! and rate limiting.
+//! File watch listener — cross-platform, with glob filtering, debouncing,
+//! and rate limiting. Uses the `notify` crate (inotify on Linux, FSEvents on
+//! macOS, ReadDirectoryChanges on Windows).
 
 use crate::daemon_client;
 use crate::rate_limit::RateLimiter;
-use inotify::{EventMask, Inotify, WatchMask};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use phyl_core::ListenWatchConfig;
 use std::collections::HashMap;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -17,11 +17,22 @@ pub async fn run_file_watches(
     socket: &str,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let mut inotify = Inotify::init().map_err(|e| format!("failed to init inotify: {e}"))?;
     let rate_limiter = RateLimiter::new();
 
-    // Map watch descriptors to configs
-    let mut wd_map: HashMap<i32, usize> = HashMap::new();
+    // Channel for receiving notify events
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Event>(256);
+
+    // Create the watcher
+    let tx_clone = tx.clone();
+    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+        if let Ok(event) = res {
+            let _ = tx_clone.blocking_send(event);
+        }
+    })
+    .map_err(|e| format!("failed to create file watcher: {e}"))?;
+
+    // Map watched paths to config indices
+    let mut path_config: HashMap<PathBuf, usize> = HashMap::new();
 
     for (i, watch_config) in watches.iter().enumerate() {
         let path = Path::new(&watch_config.path);
@@ -33,20 +44,22 @@ pub async fn run_file_watches(
             continue;
         }
 
-        let mask = build_watch_mask(&watch_config.events);
+        let mode = if watch_config.recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
 
-        match inotify.watches().add(path, mask) {
-            Ok(wd) => {
-                wd_map.insert(wd.get_watch_descriptor_id(), i);
+        match watcher.watch(path, mode) {
+            Ok(()) => {
+                let canonical = path
+                    .canonicalize()
+                    .unwrap_or_else(|_| path.to_path_buf());
+                path_config.insert(canonical, i);
                 eprintln!(
                     "phyl-listen: [{}] watching {}",
                     watch_config.name, watch_config.path
                 );
-
-                // Add recursive watches for subdirectories
-                if watch_config.recursive && path.is_dir() {
-                    add_recursive_watches(&mut inotify, path, mask, i, &mut wd_map);
-                }
             }
             Err(e) => {
                 eprintln!(
@@ -57,13 +70,12 @@ pub async fn run_file_watches(
         }
     }
 
-    if wd_map.is_empty() {
+    if path_config.is_empty() {
         return Err("no watches could be established".to_string());
     }
 
     // Debounce state: path -> (last event time, event type, watch config index)
     let mut debounce_state: HashMap<PathBuf, (Instant, String, usize)> = HashMap::new();
-    let mut buffer = vec![0u8; 4096];
 
     loop {
         // Check debounce timers
@@ -82,12 +94,6 @@ pub async fn run_file_watches(
         // Fire debounced events
         for (path, event_type, config_idx) in to_fire {
             let watch_config = &watches[config_idx];
-
-            // Skip "create then delete" (no session)
-            if event_type == "delete" {
-                // Check if this was preceded by a create — if so, skip entirely
-                // (simplified: we just fire the delete event)
-            }
 
             if !rate_limiter.check(&watch_config.name, watch_config.rate_limit) {
                 eprintln!(
@@ -112,87 +118,65 @@ pub async fn run_file_watches(
             }
         }
 
-        // Poll for inotify events with a short timeout (for debounce checking)
+        // Wait for notify events or debounce timeout
+        let sleep = tokio::time::sleep(Duration::from_millis(500));
+        tokio::pin!(sleep);
+
         tokio::select! {
-            result = tokio::task::spawn_blocking({
-                let raw_fd = inotify.as_raw_fd();
-                move || {
-                    // Use poll() to wait for inotify events with 500ms timeout
-                    let mut pollfd = libc::pollfd {
-                        fd: raw_fd,
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    unsafe {
-                        libc::poll(&mut pollfd, 1, 500)
-                    }
+            Some(event) = rx.recv() => {
+                // Process the notify event
+                let event_type = notify_event_type(&event.kind);
+                if event_type.is_empty() {
+                    continue;
                 }
-            }) => {
-                match result {
-                    Ok(poll_result) if poll_result > 0 => {
-                        // Read events
-                        match inotify.read_events(&mut buffer) {
-                            Ok(events) => {
-                                for event in events {
-                                    let wd_id = event.wd.get_watch_descriptor_id();
-                                    let config_idx = match wd_map.get(&wd_id) {
-                                        Some(idx) => *idx,
-                                        None => continue,
-                                    };
-                                    let watch_config = &watches[config_idx];
 
-                                    // Get filename
-                                    let filename = match event.name {
-                                        Some(name) => name.to_string_lossy().to_string(),
-                                        None => continue,
-                                    };
+                for event_path in &event.paths {
+                    // Find the matching watch config by checking parent paths
+                    let config_idx = match find_config_for_path(event_path, &watches, &path_config) {
+                        Some(idx) => idx,
+                        None => continue,
+                    };
+                    let watch_config = &watches[config_idx];
 
-                                    // Skip hidden files unless glob matches
-                                    if filename.starts_with('.') {
-                                        if let Some(glob_pattern) = &watch_config.glob {
-                                            if !glob_matches(glob_pattern, &filename) {
-                                                continue;
-                                            }
-                                        } else {
-                                            continue;
-                                        }
-                                    }
+                    // Get the filename
+                    let filename = match event_path.file_name() {
+                        Some(name) => name.to_string_lossy().to_string(),
+                        None => continue,
+                    };
 
-                                    // Apply glob filter
-                                    if let Some(glob_pattern) = &watch_config.glob
-                                        && !glob_matches(glob_pattern, &filename) {
-                                            continue;
-                                        }
-
-                                    // Map inotify event to our event type
-                                    let event_type = mask_to_event_type(&event.mask);
-                                    if event_type.is_empty() {
-                                        continue;
-                                    }
-
-                                    // Check against configured event types
-                                    if !watch_config.events.is_empty()
-                                        && !watch_config.events.contains(&event_type)
-                                    {
-                                        continue;
-                                    }
-
-                                    let full_path = Path::new(&watch_config.path).join(&filename);
-
-                                    // Add to debounce state
-                                    debounce_state.insert(
-                                        full_path,
-                                        (Instant::now(), event_type, config_idx),
-                                    );
-                                }
+                    // Skip hidden files unless glob matches
+                    if filename.starts_with('.') {
+                        if let Some(glob_pattern) = &watch_config.glob {
+                            if !glob_matches(glob_pattern, &filename) {
+                                continue;
                             }
-                            Err(e) => {
-                                eprintln!("phyl-listen: inotify read error: {e}");
-                            }
+                        } else {
+                            continue;
                         }
                     }
-                    _ => {} // timeout or error, continue loop
+
+                    // Apply glob filter
+                    if let Some(glob_pattern) = &watch_config.glob
+                        && !glob_matches(glob_pattern, &filename) {
+                            continue;
+                        }
+
+                    // Check against configured event types
+                    if !watch_config.events.is_empty()
+                        && !watch_config.events.contains(&event_type)
+                    {
+                        continue;
+                    }
+
+                    // Add to debounce state
+                    debounce_state.insert(
+                        event_path.clone(),
+                        (Instant::now(), event_type.clone(), config_idx),
+                    );
                 }
+            }
+            _ = &mut sleep => {
+                // Timeout, just loop to check debounce timers
             }
             _ = shutdown.changed() => {
                 eprintln!("phyl-listen: file watches stopped");
@@ -202,73 +186,50 @@ pub async fn run_file_watches(
     }
 }
 
-fn build_watch_mask(events: &[String]) -> WatchMask {
-    let mut mask = WatchMask::empty();
-    if events.is_empty() {
-        // Watch everything by default
-        return WatchMask::CREATE
-            | WatchMask::MODIFY
-            | WatchMask::DELETE
-            | WatchMask::MOVED_TO
-            | WatchMask::MOVED_FROM;
+/// Map a `notify` event kind to our string event types.
+fn notify_event_type(kind: &EventKind) -> String {
+    match kind {
+        EventKind::Create(_) => "create".to_string(),
+        EventKind::Modify(_) => "modify".to_string(),
+        EventKind::Remove(_) => "delete".to_string(),
+        _ => String::new(),
     }
-    for event in events {
-        match event.as_str() {
-            "create" => mask |= WatchMask::CREATE,
-            "modify" => mask |= WatchMask::MODIFY,
-            "delete" => mask |= WatchMask::DELETE,
-            "move_to" => mask |= WatchMask::MOVED_TO,
-            "move_from" => mask |= WatchMask::MOVED_FROM,
-            _ => eprintln!("phyl-listen: unknown watch event type: {event}"),
-        }
-    }
-    mask
 }
 
-fn mask_to_event_type(mask: &EventMask) -> String {
-    if mask.contains(EventMask::CREATE) {
-        "create".to_string()
-    } else if mask.contains(EventMask::MODIFY) {
-        "modify".to_string()
-    } else if mask.contains(EventMask::DELETE) {
-        "delete".to_string()
-    } else if mask.contains(EventMask::MOVED_TO) {
-        "move_to".to_string()
-    } else if mask.contains(EventMask::MOVED_FROM) {
-        "move_from".to_string()
-    } else {
-        String::new()
+/// Find which watch config a path belongs to by checking parent directories.
+fn find_config_for_path(
+    event_path: &Path,
+    watches: &[ListenWatchConfig],
+    path_config: &HashMap<PathBuf, usize>,
+) -> Option<usize> {
+    // Try exact canonical match first, then walk parent directories
+    let canonical = event_path
+        .canonicalize()
+        .unwrap_or_else(|_| event_path.to_path_buf());
+
+    let mut check = Some(canonical.as_path());
+    while let Some(dir) = check {
+        if let Some(idx) = path_config.get(dir) {
+            return Some(*idx);
+        }
+        check = dir.parent();
     }
+
+    // Fallback: match against the configured path strings
+    for (i, watch) in watches.iter().enumerate() {
+        let watch_path = Path::new(&watch.path);
+        if event_path.starts_with(watch_path) {
+            return Some(i);
+        }
+    }
+
+    None
 }
 
 fn glob_matches(pattern: &str, filename: &str) -> bool {
     glob::Pattern::new(pattern)
         .map(|p| p.matches(filename))
         .unwrap_or(false)
-}
-
-fn add_recursive_watches(
-    inotify: &mut Inotify,
-    dir: &Path,
-    mask: WatchMask,
-    config_idx: usize,
-    wd_map: &mut HashMap<i32, usize>,
-) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') {
-                    continue;
-                }
-                if let Ok(wd) = inotify.watches().add(&path, mask) {
-                    wd_map.insert(wd.get_watch_descriptor_id(), config_idx);
-                }
-                add_recursive_watches(inotify, &path, mask, config_idx, wd_map);
-            }
-        }
-    }
 }
 
 fn assemble_file_prompt(config: &ListenWatchConfig, path: &Path, event_type: &str) -> String {
@@ -315,28 +276,25 @@ mod tests {
     }
 
     #[test]
-    fn test_build_watch_mask_empty() {
-        let mask = build_watch_mask(&[]);
-        assert!(mask.contains(WatchMask::CREATE));
-        assert!(mask.contains(WatchMask::MODIFY));
-        assert!(mask.contains(WatchMask::DELETE));
-    }
-
-    #[test]
-    fn test_build_watch_mask_specific() {
-        let mask = build_watch_mask(&["create".to_string(), "modify".to_string()]);
-        assert!(mask.contains(WatchMask::CREATE));
-        assert!(mask.contains(WatchMask::MODIFY));
-        assert!(!mask.contains(WatchMask::DELETE));
-    }
-
-    #[test]
-    fn test_mask_to_event_type() {
-        assert_eq!(mask_to_event_type(&EventMask::CREATE), "create");
-        assert_eq!(mask_to_event_type(&EventMask::MODIFY), "modify");
-        assert_eq!(mask_to_event_type(&EventMask::DELETE), "delete");
-        assert_eq!(mask_to_event_type(&EventMask::MOVED_TO), "move_to");
-        assert_eq!(mask_to_event_type(&EventMask::MOVED_FROM), "move_from");
+    fn test_notify_event_type() {
+        assert_eq!(
+            notify_event_type(&EventKind::Create(notify::event::CreateKind::File)),
+            "create"
+        );
+        assert_eq!(
+            notify_event_type(&EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Content
+            ))),
+            "modify"
+        );
+        assert_eq!(
+            notify_event_type(&EventKind::Remove(notify::event::RemoveKind::File)),
+            "delete"
+        );
+        assert_eq!(
+            notify_event_type(&EventKind::Access(notify::event::AccessKind::Read)),
+            ""
+        );
     }
 
     #[test]

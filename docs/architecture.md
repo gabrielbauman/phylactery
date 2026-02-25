@@ -55,7 +55,7 @@ This is not a framework. It's a bunch of programs that talk to each other throug
 Phylactery uses a deliberate two-repo model:
 
 - **This repo** builds the binaries. Clone it, build it, install, forget about it until you want to hack on the agent itself.
-- **`$PHYLACTERY_HOME`** (default `~/.local/share/phylactery`) is the agent's home. A separate git repo created by `phyl init`. It holds identity files, the knowledge base, session state, config, and secrets. This is the agent's living memory.
+- **`$PHYLACTERY_HOME`** (default `~/.local/share/phylactery` on Linux, `~/Library/Application Support/phylactery` on macOS) is the agent's home. A separate git repo created by `phyl init`. It holds identity files, the knowledge base, session state, config, and secrets. This is the agent's living memory.
 
 ## Process Architecture
 

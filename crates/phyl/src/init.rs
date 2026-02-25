@@ -48,15 +48,22 @@ pub fn run(path: Option<&str>) -> anyhow::Result<()> {
     // Initial git commit
     git_add_and_commit(&home)?;
 
-    // Create XDG config symlink
+    // Create config symlink (XDG convention on Linux only)
+    #[cfg(not(target_os = "macos"))]
     create_xdg_symlink(&home);
+
+    let services_cmd = if cfg!(target_os = "macos") {
+        "launchd"
+    } else {
+        "systemd"
+    };
 
     eprintln!("Initialized phylactery home at {}", home.display());
     eprintln!();
     eprintln!("Next steps:");
     eprintln!("  phyl config edit              # Edit LAW.md, JOB.md, config.toml");
     eprintln!("  phyl config add mcp ...       # Add tool servers");
-    eprintln!("  phyl setup systemd            # Install as systemd user services");
+    eprintln!("  phyl setup {services_cmd:<20} # Install as {services_cmd} user services");
     eprintln!("  phyl start                    # Or just start the daemon");
     Ok(())
 }
@@ -109,10 +116,19 @@ fn run_git(home: &Path, args: &[&str]) -> anyhow::Result<()> {
 }
 
 fn write_config(home: &Path) -> anyhow::Result<()> {
-    // Generate config with the default socket path resolved at runtime
-    let socket_path = std::env::var("XDG_RUNTIME_DIR")
-        .map(|dir| format!("{}/phylactery.sock", dir))
-        .unwrap_or_else(|_| "/tmp/phylactery.sock".to_string());
+    // Generate config with the default socket path resolved at runtime.
+    // On macOS, prefer $TMPDIR (per-user); on Linux, prefer $XDG_RUNTIME_DIR.
+    let socket_path = if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        format!("{dir}/phylactery.sock")
+    } else if cfg!(target_os = "macos") {
+        if let Ok(dir) = std::env::var("TMPDIR") {
+            format!("{}/phylactery.sock", dir.trim_end_matches('/'))
+        } else {
+            "/tmp/phylactery.sock".to_string()
+        }
+    } else {
+        "/tmp/phylactery.sock".to_string()
+    };
 
     let config = format!(
         r#"[daemon]
