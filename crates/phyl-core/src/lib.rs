@@ -209,6 +209,8 @@ pub struct Config {
     pub git: GitConfig,
     #[serde(default)]
     pub mcp: Vec<McpServerConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<BridgeConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,8 +312,34 @@ impl Default for Config {
             model: ModelConfig::default(),
             git: GitConfig::default(),
             mcp: Vec::new(),
+            bridge: None,
         }
     }
+}
+
+// --- Bridge configuration ---
+
+/// Bridge configuration section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<SignalBridgeConfig>,
+}
+
+/// Signal Messenger bridge configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalBridgeConfig {
+    /// Agent's Signal phone number (registered with signal-cli).
+    pub phone: String,
+    /// Owner's Signal phone number (only accept messages from this number).
+    pub owner: String,
+    /// Path to signal-cli binary.
+    #[serde(default = "default_signal_cli")]
+    pub signal_cli: String,
+}
+
+fn default_signal_cli() -> String {
+    "signal-cli".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

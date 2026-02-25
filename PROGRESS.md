@@ -238,6 +238,45 @@ Tracking implementation status against the [plan](PLAN.md).
 - [x] `GET /feed` SSE endpoint in daemon — done in Phase 5
 - [x] `phyl watch` CLI command — done in Phase 6
 
-## Phase 10: Signal Bridge
+## Phase 10: Signal Bridge — **Complete**
 
-- [ ] Implement `phyl-bridge-signal`
+- [x] Implement `phyl-bridge-signal`:
+      - Read `[bridge.signal]` config from `$PHYLACTERY_HOME/config.toml`
+        (`phone`, `owner`, `signal_cli` fields)
+      - Verify `signal-cli` availability on startup (version check)
+      - Connect to daemon `GET /feed` SSE endpoint via Unix socket
+        (hyper HTTP/1.1 client, same pattern as `phyl` CLI client)
+      - Parse SSE frames, extract `LogEntry` from event data JSON
+      - Forward attention events as Signal messages to configured owner:
+        - Question events: include question text and numbered options,
+          track pending questions in FIFO queue for reply matching
+        - Done events: include session summary
+        - Error events: include error message
+      - Poll for inbound Signal messages via
+        `signal-cli -a <phone> --output=json receive --timeout 2`
+      - Parse `signal-cli` JSON envelope format
+        (`envelope.sourceNumber`, `envelope.dataMessage.message`)
+      - Security: only accept messages from configured `owner` number,
+        ignore all others
+      - Route inbound replies to pending questions via
+        `POST /sessions/:id/events` with `question_id`
+      - Numeric reply matching: "1", "2", etc. resolve to question
+        option text
+      - Accept new session requests from inbound messages when no
+        questions are pending (`POST /sessions` with message as prompt),
+        confirm session start via Signal reply
+      - Automatic reconnection to daemon feed on connection loss (5s delay)
+      - Pending question queue capped at 50 to prevent unbounded growth
+      - Graceful shutdown on Ctrl-C via `tokio::signal::ctrl_c()`
+- [x] Config types added to `phyl-core/src/lib.rs`:
+      `BridgeConfig`, `SignalBridgeConfig` with `phone`, `owner`,
+      `signal_cli` (defaults to `"signal-cli"`)
+- [x] Config field added to `Config` struct:
+      `bridge: Option<BridgeConfig>` (optional, backward-compatible)
+- [x] `phyl init` config template updated with commented-out
+      `[bridge.signal]` section
+- [x] Unit tests (14 tests): answer resolution (numeric options, out of
+      range, text, empty options), signal-cli JSON envelope parsing
+      (normal, no message, empty message, null envelope), pending
+      question state management (tracking, FIFO order, cap at 50),
+      config deserialization (full, defaults, missing bridge)

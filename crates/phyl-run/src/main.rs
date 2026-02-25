@@ -387,13 +387,7 @@ fn read_config(home: &Path) -> Result<Config, String> {
     let config_path = home.join("config.toml");
     if !config_path.exists() {
         eprintln!("phyl-run: config.toml not found at {}, using defaults", config_path.display());
-        return Ok(Config {
-            daemon: Default::default(),
-            session: Default::default(),
-            model: Default::default(),
-            git: Default::default(),
-            mcp: vec![],
-        });
+        return Ok(Config::default());
     }
 
     let contents = fs::read_to_string(&config_path)

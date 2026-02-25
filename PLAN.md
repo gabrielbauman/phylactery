@@ -962,14 +962,14 @@ The agentic loop, testable without a daemon.
 
 ### Phase 10: Signal Bridge
 
-- [ ] Implement `phyl-bridge-signal`:
+- [x] Implement `phyl-bridge-signal`:
       - Connect to daemon `GET /feed` via Unix socket
       - Send questions/notifications as Signal messages via `signal-cli`
       - Listen for inbound Signal messages
       - Route replies back to sessions via `POST /sessions/:id/events`
       - Accept new session requests from inbound messages
       - Only accept messages from configured owner number
-- [ ] Config: signal phone numbers, signal-cli path
+- [x] Config: signal phone numbers, signal-cli path
 - [ ] Test: end-to-end question/answer cycle over Signal
 
 ---

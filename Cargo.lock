@@ -555,7 +555,16 @@ dependencies = [
 name = "phyl-bridge-signal"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "chrono",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "phyl-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

@@ -33,7 +33,7 @@ A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the 
 - **phyl-tool-files** — One-shot file tool. Provides `read_file`, `write_file`, and `search_files` operations. Returns an array of `ToolSpec` from `--spec`. Supports `--spec` for discovery.
 - **phyl-tool-session** — Server-mode tool. Provides `ask_human` (blocks for human response) and `done` (signals `end_session`). NDJSON on stdin/stdout. Supports `--spec` and `--serve`.
 - **phyl-tool-mcp** — MCP bridge tool. Server-mode, NDJSON on stdin/stdout. Bridges to external MCP servers configured in `config.toml` (`[[mcp]]` sections). Implements MCP JSON-RPC 2.0 client protocol (initialize, tools/list, tools/call). Prefixes tool names with server name (e.g., `filesystem_read_file`). Supports `--spec` and `--serve`.
-- **phyl-bridge-signal** — Signal Messenger bridge (stub).
+- **phyl-bridge-signal** — Signal Messenger bridge. Connects to daemon's `GET /feed` SSE stream, forwards questions/done/errors as Signal messages to the owner. Listens for inbound Signal messages from the owner and routes replies to pending questions or creates new sessions. Uses `signal-cli` for Signal protocol. Configured via `[bridge.signal]` in `config.toml`.
 
 ## Key Protocols
 
@@ -43,6 +43,7 @@ All inter-process communication is JSON on stdin/stdout. The types in `phyl-core
 - **One-shot tools**: read `ToolInput`, write `ToolOutput`
 - **Server-mode tools**: NDJSON `ServerRequest`/`ServerResponse` with `id` field for multiplexing and optional `signal` field for out-of-band messages (e.g. `"end_session"`)
 - **Tool discovery**: `phyl-tool-X --spec` prints `ToolSpec` (or array of them) with a `mode` field (`"oneshot"` or `"server"`)
+- **Bridge protocol**: Bridges are standalone processes that connect to the daemon's `GET /feed` SSE endpoint and post back via `POST /sessions/:id/events`. They are not session-specific and not discovered by `phyl-run`.
 
 ## Conventions
 
