@@ -18,14 +18,14 @@ No linter or formatter is configured yet. Use `cargo clippy` and `cargo fmt` if 
 
 A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the full architecture. Read `PROGRESS.md` for what's implemented.
 
-**Two-repo model:** This repo builds the binaries. The agent's runtime state lives in a separate git repo at `$PHYLACTERY_HOME` (default `~/.phylactery`), created by `phyl init`.
+**Two-repo model:** This repo builds the binaries. The agent's runtime state lives in a separate git repo at `$PHYLACTERY_HOME` (default `~/.local/share/phylactery`; legacy `~/.phylactery` also supported), created by `phyl init`.
 
 ## Architecture
 
 12 crates in a Cargo workspace under `crates/`. One shared library, eleven binaries:
 
 - **phyl-core** — Shared types library. All protocol types live here. Every other crate depends on it.
-- **phyl** — CLI client. Subcommands: `init`, `start [-d]`, `session [-d] "prompt"`, `ls`, `status <id>`, `say <id> "msg"`, `log <id>`, `stop <id>`, `watch`. Talks to the daemon over a Unix socket using hyper HTTP/1.1 client.
+- **phyl** — CLI client. Session subcommands (`session`, `ls`, `status`, `say`, `log`, `stop`, `watch`) talk to the daemon over a Unix socket. Setup subcommands (`init`, `setup systemd`, `setup status`, `setup migrate-xdg`, `config show/validate/edit/add`) manage configuration, secrets, and systemd user units directly. `start --all` runs all services in foreground without systemd.
 - **phylactd** — Daemon. Manages sessions and serves a REST API on a Unix socket (`axum` + `tokio`). Spawns `phyl-run` per session, tracks processes, reaps finished sessions. API: `GET /health`, `POST /sessions`, `GET /sessions`, `GET /sessions/:id`, `DELETE /sessions/:id`, `POST /sessions/:id/events`, `GET /feed` (SSE).
 - **phyl-run** — Session runner. The agentic loop: discover tools, invoke model adapter, dispatch tool calls (oneshot in parallel, server-mode via NDJSON), manage FIFO events, write `log.jsonl`, finalize SOUL.md with reflection. Invoked as `phyl-run --session-dir <path> --prompt <text>`.
 - **phyl-model-claude** — Model adapter. Translates between phylactery's JSON format and the `claude` CLI. Reads `ModelRequest` from stdin, writes `ModelResponse` to stdout.
@@ -35,7 +35,7 @@ A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the 
 - **phyl-tool-mcp** — MCP bridge tool. Server-mode, NDJSON on stdin/stdout. Bridges to external MCP servers configured in `config.toml` (`[[mcp]]` sections). Implements MCP JSON-RPC 2.0 client protocol (initialize, tools/list, tools/call). Prefixes tool names with server name (e.g., `filesystem_read_file`). Supports `--spec`, `--serve`, and `--call <server> <tool> <args>` (one-shot CLI mode for use outside sessions, e.g. from `phyl-poll`).
 - **phyl-bridge-signal** — Signal Messenger bridge. Connects to daemon's `GET /feed` SSE stream, forwards questions/done/errors as Signal messages to the owner. Listens for inbound Signal messages from the owner and routes replies to pending questions or creates new sessions. Uses `signal-cli` for Signal protocol. Configured via `[bridge.signal]` in `config.toml`.
 - **phyl-poll** — Poller. Runs commands on configurable intervals, compares output to previous results, and starts sessions via the daemon API when changes are detected. Configured via `[[poll]]` sections in `config.toml`. State files stored in `$PHYLACTERY_HOME/poll/`. Turns any CLI tool into an event source for the agent.
-- **phyl-listen** — Incoming event listener. Receives webhooks (HTTP POST) on a TCP port and creates sessions via the daemon API. Configured via `[listen]` and `[[listen.hook]]` sections in `config.toml`. Supports HMAC-SHA256 webhook secret verification, rate limiting, and deduplication. Default bind `127.0.0.1:7890`.
+- **phyl-listen** — Incoming event listener. Three listener types: webhooks (`[[listen.hook]]` — HTTP POST on a TCP port, HMAC-SHA256 verification, event-type routing), SSE subscriptions (`[[listen.sse]]` — persistent connections to event streams, reconnection with `Last-Event-ID`), and file watches (`[[listen.watch]]` — inotify-based, glob filtering, debouncing). All create sessions via the daemon API. Supports rate limiting and deduplication.
 
 ## Key Protocols
 
