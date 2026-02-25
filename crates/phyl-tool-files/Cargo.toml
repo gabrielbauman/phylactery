@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 phyl-core = { path = "../phyl-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -264,7 +264,10 @@ dependencies = [
 name = "phyl-tool-bash"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "phyl-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -272,6 +275,8 @@ name = "phyl-tool-files"
 version = "0.1.0"
 dependencies = [
  "phyl-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

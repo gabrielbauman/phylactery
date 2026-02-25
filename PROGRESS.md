@@ -15,13 +15,13 @@ Tracking implementation status against the [plan](PLAN.md).
       `knowledge/` structure, `sessions/.gitignore`
 - [x] Verify: `cargo build` succeeds, produces multiple binaries
 
-## Phase 2: Tool Protocol
+## Phase 2: Tool Protocol — **Complete**
 
-- [ ] Implement `phyl-tool-bash`: `--spec` (with `"mode":"oneshot"`) and
+- [x] Implement `phyl-tool-bash`: `--spec` (with `"mode":"oneshot"`) and
       invocation mode. chdir to `$PHYLACTERY_SESSION_DIR/scratch/`, enforce
       timeout.
-- [ ] Implement `phyl-tool-files`: read_file, write_file, search_files
-- [ ] Test from command line:
+- [x] Implement `phyl-tool-files`: read_file, write_file, search_files
+- [x] Test from command line:
       `echo '{"name":"bash","arguments":{"command":"echo hi"}}' | phyl-tool-bash`
 
 ## Phase 3: Model Adapter
