@@ -122,7 +122,9 @@ sessions outside its job description. This is the focus layer.
 | `phyl-tool-bash` | Tool: execute shell commands. | Rust (or shell) |
 | `phyl-tool-files` | Tool: read/write/search files. | Rust (or shell) |
 | `phyl-tool-done` | Tool: end a session. | Shell script |
+| `phyl-tool-ask` | Tool: ask the human a question. Blocks until answered. | Rust |
 | `phyl-tool-mcp` | Tool: bridge to any MCP server. | Rust |
+| `phyl-bridge-signal` | Bridge: two-way Signal Messenger interface. | Rust |
 
 Each tool and model adapter is a standalone executable. They can be written in
 any language. The contract is JSON on stdin/stdout.
@@ -265,6 +267,164 @@ model invocation cycle.
 
 ---
 
+## Human Interface: Bridges
+
+The agent needs human attention sometimes — to answer questions, approve
+actions, or just report results. Rather than build one UI, we build a
+**bridge protocol** and let small programs connect the agent to any transport.
+
+### The Attention Feed
+
+Sessions can request human attention. The model does this via an `ask_human`
+tool (built-in). When called, the session emits a question event to the log
+and blocks, waiting for a response on its FIFO.
+
+Log event:
+
+```jsonl
+{"ts":"...","type":"question","id":"q_1","content":"Should I send this email to Bob?","options":["yes","no","edit draft"]}
+```
+
+The daemon aggregates attention-worthy events from all session logs into a
+single SSE (Server-Sent Events) stream:
+
+```
+GET /feed → streams question, notification, done, error events from all sessions
+```
+
+When a bridge delivers the human's answer, it posts back:
+
+```
+POST /sessions/:id/events  body: {"type":"answer","question_id":"q_1","content":"yes"}
+```
+
+The session unblocks and continues.
+
+### Bridge Protocol
+
+A bridge is a standalone program. It:
+
+1. Connects to `GET /feed` on the daemon's Unix socket
+2. Presents events to the human (terminal, Signal, Matrix, email, whatever)
+3. Collects responses
+4. Posts them back via `POST /sessions/:id/events`
+
+That's the entire contract. A bridge doesn't need to know about models, tools,
+or the knowledge base. It just reads events and writes responses.
+
+### Built-in: `phyl watch`
+
+The simplest bridge. A CLI command that connects to the feed and displays a
+live multiplexed view of all sessions:
+
+```
+$ phyl watch
+[3a7f] Running: checking email...
+[3a7f] QUESTION: Found 3 new emails. Summarize them? [yes/no]
+> 3a7f yes
+[3a7f] Summarizing...
+[91b2] Done: "Updated project notes in knowledge base"
+[3a7f] Done: "Summarized 3 emails, updated contacts/bob.md"
+```
+
+Line-based. Works over SSH. No TUI framework.
+
+### Signal Bridge: `phyl-bridge-signal`
+
+A separate program (likely Python, to use `signal-cli` or `signal-cli-rest-api`)
+that:
+
+1. Connects to `GET /feed` on the daemon's Unix socket
+2. For each attention event, sends a Signal message to the configured phone
+   number
+3. Listens for Signal replies
+4. Matches replies to sessions and posts them back via the API
+
+Signal becomes a two-way interface to the agent:
+
+```
+Signal message from agent:
+  [Session 3a7f] Found 3 new emails. Summarize them?
+  Reply: yes / no / edit draft
+
+You reply:
+  yes
+
+Agent continues.
+```
+
+The bridge can also accept **inbound** Signal messages as new sessions:
+
+```
+You send to agent:
+  Check if the server is healthy
+
+Bridge calls:
+  POST /sessions {"prompt": "Check if the server is healthy"}
+
+Agent creates a session, does the work, reports back via Signal.
+```
+
+This makes Signal the primary human interface. The agent messages you when it
+needs something. You message the agent to give it tasks. Everything else runs
+autonomously.
+
+**Configuration** (in `config.toml`):
+
+```toml
+[bridge.signal]
+phone = "+1234567890"           # Agent's Signal number
+owner = "+0987654321"           # Your Signal number (only accept from this)
+signal_cli = "signal-cli"       # Path to signal-cli binary
+```
+
+**Security:** The bridge only accepts messages from the configured owner
+number. All other messages are ignored.
+
+### Other Bridges (future)
+
+The bridge protocol is simple enough that adding new transports is trivial:
+
+| Bridge | Transport | Effort |
+|--------|-----------|--------|
+| `phyl watch` | Terminal (built-in CLI) | Built-in |
+| `phyl-bridge-signal` | Signal Messenger | ~150 lines Python |
+| `phyl-bridge-matrix` | Matrix chat room | ~150 lines Python |
+| `phyl-bridge-email` | Email (IMAP/SMTP) | ~200 lines Python |
+| `phyl-bridge-telegram` | Telegram bot | ~100 lines Python |
+| `phyl-bridge-ntfy` | ntfy.sh push notifications (one-way) | ~30 lines shell |
+
+Bridges are not part of the core Rust workspace. They're scripts in a
+`bridges/` directory. They can be installed and run independently.
+
+### The `ask_human` Tool
+
+This is a built-in tool available to every session. When the model needs human
+input, it calls this tool:
+
+```json
+{
+  "name": "ask_human",
+  "arguments": {
+    "question": "Should I send this email to Bob?",
+    "options": ["yes", "no", "edit draft"],
+    "context": "Draft email: ..."
+  }
+}
+```
+
+The session runner:
+
+1. Writes a `question` event to `log.jsonl` (with a unique question ID)
+2. Blocks, waiting for an `answer` event on the FIFO
+3. Returns the human's answer to the model as the tool result
+
+If no answer arrives within a timeout (configurable, default 30 minutes), the
+tool returns `"No response from human — timed out"` and the model decides how
+to proceed.
+
+---
+
 ## Daemon API
 
 `phylactd` serves HTTP on a Unix socket. Default path:
@@ -277,6 +437,7 @@ model invocation cycle.
 | `GET` | `/sessions/:id` | Session detail + recent log entries |
 | `POST` | `/sessions/:id/events` | Inject event: `{"content":"..."}` |
 | `DELETE` | `/sessions/:id` | Kill the session process |
+| `GET` | `/feed` | SSE stream of attention events across all sessions |
 | `GET` | `/health` | Health check |
 
 No auth. Secure via socket file permissions (0700). If you need remote access,
@@ -296,12 +457,17 @@ phyl status <id>                   # Session detail
 phyl say <id> "new info"           # Inject event into running session
 phyl log <id>                      # Tail session log (like tail -f)
 phyl stop <id>                     # Kill session
+phyl watch                         # Live feed of all sessions, answer questions
 phyl start                         # Start daemon (foreground)
 phyl start -d                      # Start daemon (background, daemonize)
 ```
 
 Foreground session streams `log.jsonl` to the terminal as it's written.
 Ctrl-C detaches (session keeps running). `phyl stop` kills.
+
+`phyl watch` is the primary human interface when using the terminal. It
+multiplexes all session activity into a single stream and lets you respond to
+agent questions inline.
 
 ---
 
@@ -335,7 +501,13 @@ phylactery/
 │   ├── phyl-tool-files/        # File read/write/search tool
 │   │   ├── Cargo.toml
 │   │   └── src/main.rs
-│   └── phyl-tool-mcp/          # MCP bridge tool
+│   ├── phyl-tool-mcp/          # MCP bridge tool
+│   │   ├── Cargo.toml
+│   │   └── src/main.rs
+│   ├── phyl-tool-ask/          # Ask-human tool (blocks for human response)
+│   │   ├── Cargo.toml
+│   │   └── src/main.rs
+│   └── phyl-bridge-signal/     # Signal Messenger bridge
 │       ├── Cargo.toml
 │       └── src/main.rs
 ├── tools/
@@ -521,6 +693,33 @@ The agentic loop, testable without a daemon.
 - [ ] Seed `knowledge/` directory structure
 - [ ] Add knowledge base summary generation to session startup
 
+### Phase 9: Human Attention System
+
+- [ ] Implement `phyl-tool-ask`:
+      - On `--spec`: return ask_human tool schema
+      - On invocation: write question event to log, block waiting for answer
+        on a response file/FIFO, return answer as tool output
+- [ ] Add `GET /feed` SSE endpoint to daemon:
+      - Tail all active session logs
+      - Filter for attention-worthy events (question, done, error)
+      - Stream as SSE to connected clients
+- [ ] Implement `phyl watch` CLI command:
+      - Connect to `GET /feed`
+      - Display events, accept typed responses
+      - Route responses to correct session via `POST /sessions/:id/events`
+
+### Phase 10: Signal Bridge
+
+- [ ] Implement `phyl-bridge-signal`:
+      - Connect to daemon `GET /feed` via Unix socket
+      - Send questions/notifications as Signal messages via `signal-cli`
+      - Listen for inbound Signal messages
+      - Route replies back to sessions via `POST /sessions/:id/events`
+      - Accept new session requests from inbound messages
+      - Only accept messages from configured owner number
+- [ ] Config: signal phone numbers, signal-cli path
+- [ ] Test: end-to-end question/answer cycle over Signal
+
 ---
 
 ## Design Decisions
@@ -603,7 +802,7 @@ and grep are enough.
 
 ## What This Is Not
 
-- **Not a chat UI.** No web frontend. Use the terminal.
+- **Not a chat UI.** No web frontend. Use the terminal or Signal.
 - **Not multi-user.** One human, one agent, one machine.
 - **Not cloud-native.** It's local processes on a Linux box.
 - **Not a framework.** You don't import it. You run it.
