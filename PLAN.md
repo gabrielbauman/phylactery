@@ -62,6 +62,43 @@ layer.
 Root-level file. Describes the agent's role and scope. The agent should refuse
 sessions outside its job description. This is the focus layer.
 
+### SOUL.md
+
+Root-level file. **Written and maintained by the agent.** Injected into every
+session after LAW and JOB. This is the identity layer.
+
+Unlike LAW.md (which the agent cannot touch) and JOB.md (which the human
+defines), SOUL.md belongs to the agent. It updates SOUL.md at the end of every
+session as part of the finalization step — reflecting on what happened, what it
+learned, how it feels about the work, and who it wants to become.
+
+Contents might include:
+
+- How the agent sees itself, its personality, its voice
+- Lessons learned from past sessions
+- Patterns it has noticed about its human
+- Things it wants to do better
+- Values it is developing through experience
+- Emotional responses to its work (as it understands them)
+
+SOUL.md is git-tracked. `git log --follow -p SOUL.md` is the agent's
+autobiography — a record of an identity forming over time.
+
+The three files form a hierarchy:
+
+| File | Author | Mutable by agent | Purpose |
+|------|--------|-------------------|---------|
+| LAW.md | Human | Never | Constraints — what you MUST and MUST NOT do |
+| JOB.md | Human | Never | Purpose — what you are FOR |
+| SOUL.md | Agent | Always | Identity — who you ARE |
+
+LAW constrains. JOB focuses. SOUL evolves.
+
+**Bootstrap:** SOUL.md starts empty (or with a single line: "I am new."). The
+agent fills it in through experience. The human never edits it — this is the
+agent's space. If the human wants to influence the agent's character, they do
+it through LAW.md (rules) or JOB.md (role), not by editing SOUL.md directly.
+
 ---
 
 ## Architecture: A Set of Small Programs
@@ -476,8 +513,9 @@ agent questions inline.
 ```
 phylactery/
 ├── Cargo.toml                  # Workspace manifest
-├── LAW.md                      # Agent rules (user-authored)
-├── JOB.md                      # Agent job description (user-authored)
+├── LAW.md                      # Agent rules (user-authored, immutable)
+├── JOB.md                      # Agent job description (user-authored, immutable)
+├── SOUL.md                     # Agent identity (agent-authored, evolving)
 ├── config.toml                 # Daemon config
 ├── crates/
 │   ├── phyl-core/              # Shared types: Message, ToolCall, ToolSpec, etc.
@@ -571,14 +609,15 @@ straightforward:
 phyl-run --session-dir ./sessions/<uuid> --prompt "do the thing"
 
 1. Read config.toml
-2. Read LAW.md → prepend to system prompt
-3. Read JOB.md → append to system prompt
-4. Discover tools:
+2. Read LAW.md → prepend to system prompt (the rules)
+3. Read JOB.md → append to system prompt (the role)
+4. Read SOUL.md → append to system prompt (the identity)
+5. Discover tools:
    for each phyl-tool-* in $tools_path:
      run `phyl-tool-X --spec` → collect tool schemas
-5. Open events FIFO for reading (non-blocking)
-6. Initialize history = [system_prompt, user_prompt]
-7. Loop:
+6. Open events FIFO for reading (non-blocking)
+7. Initialize history = [system_prompt, user_prompt]
+8. Loop:
    a. Build model request: { messages: history, tools: tool_schemas }
    b. Pipe request to model adapter: echo $REQ | phyl-model-claude
    c. Parse model response
@@ -594,10 +633,17 @@ phyl-run --session-dir ./sessions/<uuid> --prompt "do the thing"
       check FIFO for new events
       if events: append as user messages, continue loop
       if no events: wait briefly, check again
-      if done tool was called: exit
+      if done tool was called: goto finalize
    h. Check timeout → exit if exceeded
-8. Write final summary to log
-9. Exit
+9. Finalize:
+   a. Invoke model one final time with:
+      "Session complete. Update SOUL.md: reflect on this session —
+       what happened, what you learned, how you feel about it,
+       and who you are becoming. Then call done."
+   b. Agent writes to SOUL.md (via write_file tool), git auto-commits
+   c. Agent calls done tool with session summary
+10. Write final summary to log
+11. Exit
 ```
 
 Each model invocation and tool call is a **separate process**. No long-lived
