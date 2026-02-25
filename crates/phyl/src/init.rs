@@ -1,5 +1,6 @@
 use phyl_core::home_dir;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -8,11 +9,14 @@ use std::process::Command;
 /// Creates the agent home directory with:
 /// - A git repo
 /// - config.toml (default configuration)
+/// - secrets.env (empty, chmod 600, gitignored)
 /// - LAW.md (empty rules, human fills in)
 /// - JOB.md (empty job description, human fills in)
 /// - SOUL.md ("I am new.")
 /// - knowledge/ directory structure (contacts/, projects/, preferences/, journal/, INDEX.md)
 /// - sessions/.gitignore (ignore everything under sessions/)
+/// - poll/.gitignore (ignore poll state files)
+/// - ~/.config/phylactery/ symlink (XDG config)
 pub fn run(path: Option<&str>) -> Result<(), String> {
     let home = match path {
         Some(p) => PathBuf::from(p),
@@ -34,16 +38,28 @@ pub fn run(path: Option<&str>) -> Result<(), String> {
 
     // Write seed files
     write_config(&home)?;
+    write_secrets_env(&home)?;
     write_file(&home.join("LAW.md"), LAW_SEED)?;
     write_file(&home.join("JOB.md"), JOB_SEED)?;
     write_file(&home.join("SOUL.md"), SOUL_SEED)?;
     write_file(&home.join("knowledge/INDEX.md"), INDEX_SEED)?;
     write_file(&home.join("sessions/.gitignore"), SESSIONS_GITIGNORE)?;
+    write_file(&home.join("poll/.gitignore"), POLL_GITIGNORE)?;
+    write_file(&home.join(".gitignore"), ROOT_GITIGNORE)?;
 
     // Initial git commit
     git_add_and_commit(&home)?;
 
+    // Create XDG config symlink
+    create_xdg_symlink(&home);
+
     eprintln!("Initialized phylactery home at {}", home.display());
+    eprintln!();
+    eprintln!("Next steps:");
+    eprintln!("  phyl config edit              # Edit LAW.md, JOB.md, config.toml");
+    eprintln!("  phyl config add mcp ...       # Add tool servers");
+    eprintln!("  phyl setup systemd            # Install as systemd user services");
+    eprintln!("  phyl start                    # Or just start the daemon");
     Ok(())
 }
 
@@ -56,6 +72,7 @@ fn create_dirs(home: &Path) -> Result<(), String> {
         home.join("knowledge/preferences"),
         home.join("knowledge/journal"),
         home.join("sessions"),
+        home.join("poll"),
     ];
 
     for dir in &dirs {
@@ -127,10 +144,66 @@ auto_commit = true
 # phone = "+1234567890"           # Agent's registered Signal number
 # owner = "+0987654321"           # Your Signal number (only accept from this)
 # signal_cli = "signal-cli"       # Path to signal-cli binary
+
+# Poll rules (used by phyl-poll)
+# [[poll]]
+# name = "example"
+# command = "echo"
+# args = ["hello"]
+# interval = 300                  # seconds between polls
+# prompt = "Check this output change."
+
+# Incoming event listeners (used by phyl-listen)
+# [listen]
+# bind = "127.0.0.1:7890"        # Only needed for webhooks
+
+# [[listen.hook]]
+# name = "github"
+# path = "/hook/github"
+# secret = "$GITHUB_WEBHOOK_SECRET"
+# prompt = "A GitHub event arrived."
+
+# [[listen.watch]]
+# name = "inbox"
+# path = "/home/user/agent-inbox"
+# events = ["create"]
+# prompt = "A new file appeared in the inbox."
 "#
     );
 
     write_file(&home.join("config.toml"), &config)
+}
+
+fn write_secrets_env(home: &Path) -> Result<(), String> {
+    let path = home.join("secrets.env");
+    write_file(&path, SECRETS_SEED)?;
+
+    // chmod 600
+    let perms = fs::Permissions::from_mode(0o600);
+    fs::set_permissions(&path, perms)
+        .map_err(|e| format!("failed to set permissions on secrets.env: {e}"))?;
+
+    Ok(())
+}
+
+fn create_xdg_symlink(home: &Path) {
+    // Only create symlink if we're using XDG paths
+    let home_str = home.to_string_lossy();
+    if !home_str.contains(".local/share") {
+        return;
+    }
+
+    if let Ok(user_home) = std::env::var("HOME") {
+        let config_dir = PathBuf::from(&user_home).join(".config/phylactery");
+        if let Err(_) = fs::create_dir_all(&config_dir) {
+            return;
+        }
+        let link = config_dir.join("config.toml");
+        let target = home.join("config.toml");
+        if !link.exists() {
+            let _ = std::os::unix::fs::symlink(&target, &link);
+        }
+    }
 }
 
 fn write_file(path: &Path, content: &str) -> Result<(), String> {
@@ -176,4 +249,22 @@ const SESSIONS_GITIGNORE: &str = "\
 # They contain logs, FIFOs, scratch files, and PID files.
 *
 !.gitignore
+";
+
+const POLL_GITIGNORE: &str = "\
+# Poll state files are not git-tracked.
+# They contain the last output of each poll command.
+*
+!.gitignore
+";
+
+const ROOT_GITIGNORE: &str = "\
+# Secrets — never commit
+secrets.env
+";
+
+const SECRETS_SEED: &str = "\
+# Secrets for phylactery — do not commit
+# Format: KEY=VALUE (one per line)
+# Referenced in config.toml as $KEY
 ";
