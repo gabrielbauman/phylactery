@@ -29,7 +29,8 @@ A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the 
 - **phylactd** — Daemon (stub). Will manage sessions and serve a REST API on a Unix socket.
 - **phyl-run** — Session runner (stub). The agentic loop: invoke model, dispatch tools, write logs.
 - **phyl-model-claude** — Model adapter (stub). Translates between phylactery's JSON format and the `claude` CLI.
-- **phyl-tool-bash**, **phyl-tool-files** — One-shot tools (stubs). Spawn per call, JSON on stdin/stdout.
+- **phyl-tool-bash** — One-shot bash tool. Executes shell commands in `$PHYLACTERY_SESSION_DIR/scratch/` with timeout enforcement. Supports `--spec` for discovery.
+- **phyl-tool-files** — One-shot file tool. Provides `read_file`, `write_file`, and `search_files` operations. Returns an array of `ToolSpec` from `--spec`. Supports `--spec` for discovery.
 - **phyl-tool-session**, **phyl-tool-mcp** — Server-mode tools (stubs). Long-lived, NDJSON on stdin/stdout.
 - **phyl-bridge-signal** — Signal Messenger bridge (stub).
 
