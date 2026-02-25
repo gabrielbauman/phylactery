@@ -680,13 +680,20 @@ mod tests {
     fn test_handle_write_file_success() {
         let tmp = std::env::temp_dir().join("phyl_test_write");
         let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let file_path = tmp.join("test.txt");
+        let scratch = tmp.join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let file_path = scratch.join("test.txt");
+
+        // Set session dir so the scratch directory is allowed.
+        unsafe { std::env::set_var("PHYLACTERY_SESSION_DIR", tmp.to_string_lossy().as_ref()); }
 
         let result = handle_write_file(&serde_json::json!({
             "path": file_path.to_string_lossy(),
             "content": "hello world"
         }));
+
+        unsafe { std::env::remove_var("PHYLACTERY_SESSION_DIR"); }
+
         assert!(result.error.is_none());
         assert!(result.output.unwrap().contains("Wrote 11 bytes"));
         assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "hello world");
@@ -716,10 +723,16 @@ mod tests {
         std::fs::write(tmp.join("a.txt"), "hello world\ngoodbye world\n").unwrap();
         std::fs::write(tmp.join("b.txt"), "no match here\n").unwrap();
 
+        // Set PHYLACTERY_HOME so the temp dir passes path validation.
+        unsafe { std::env::set_var("PHYLACTERY_HOME", tmp.to_string_lossy().as_ref()); }
+
         let result = handle_search_files(&serde_json::json!({
             "pattern": "hello",
             "path": tmp.to_string_lossy()
         }));
+
+        unsafe { std::env::remove_var("PHYLACTERY_HOME"); }
+
         assert!(result.error.is_none());
         let output = result.output.unwrap();
         assert!(output.contains("hello world"));
