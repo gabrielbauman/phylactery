@@ -96,10 +96,44 @@ Tracking implementation status against the [plan](PLAN.md).
 - [x] Test: `phyl-run --session-dir sessions/test --prompt "what is 2+2"`
       (requires `phyl init` and model adapter on PATH)
 
-## Phase 5: Daemon
+## Phase 5: Daemon — **Complete**
 
-- [ ] Implement `phylactd`
-- [ ] API endpoints: POST/GET/DELETE sessions, POST events, GET health
+- [x] Implement `phylactd`:
+      - Parse `config.toml` from `$PHYLACTERY_HOME` (with defaults)
+      - Listen on Unix socket (axum + tokio `UnixListener`)
+      - Socket path from `config.daemon.socket` (default
+        `$XDG_RUNTIME_DIR/phylactery.sock` or `/tmp/phylactery.sock`)
+      - Set socket permissions to 0700 (owner-only access)
+      - Write daemon PID file to `$XDG_RUNTIME_DIR/phylactd.pid`
+      - Verify `$PHYLACTERY_HOME` exists (fail with message to run `phyl init`)
+      - Spawn `phyl-run` as child process for each session (auto-discovers
+        binary via `$PATH` or same directory as `phylactd`)
+      - In-memory session tracking: id, status, pid, child handle, prompt,
+        summary, created_at
+      - Enforce max concurrent sessions (`config.session.max_concurrent`)
+      - Background reaper task: poll every 5s, detect finished/crashed processes
+        via `try_wait()` or `kill(0)`, update status, extract summary from
+        `log.jsonl` done entries
+      - Crash recovery on startup: scan `sessions/` for directories with `pid`
+        files, re-adopt running processes (`kill -0` check), mark dead ones as
+        crashed, extract timestamps and prompts from `log.jsonl`
+      - Clean socket removal on startup (stale) and shutdown
+- [x] API endpoints:
+      - `GET /health` — returns status, active/total session counts
+      - `POST /sessions` — start session with `{"prompt":"..."}`, returns
+        `{id, status}` (201 Created)
+      - `GET /sessions` — list all sessions as `SessionInfo` array (sorted
+        newest first)
+      - `GET /sessions/:id` — session detail with prompt + last 50 log entries
+      - `DELETE /sessions/:id` — kill running session (SIGTERM → SIGKILL),
+        returns 204
+      - `POST /sessions/:id/events` — inject event into session FIFO
+        (supports user messages, answer events with `question_id`), returns 202
+      - `GET /feed` — SSE stream of attention events (question, done, error)
+        across all sessions, tails `log.jsonl` files with byte offset tracking
+- [x] Unit tests (13 tests): request/response serialization, FIFO event
+      building, log reading (empty, with entries, summary, prompt extraction),
+      config defaults, router creation
 
 ## Phase 6: CLI Client
 
@@ -119,7 +153,7 @@ Tracking implementation status against the [plan](PLAN.md).
 ## Phase 9: Human Attention System
 
 - [x] Implement `phyl-tool-session` (server mode) — done in Phase 4
-- [ ] `GET /feed` SSE endpoint in daemon
+- [x] `GET /feed` SSE endpoint in daemon — done in Phase 5
 - [ ] `phyl watch` CLI command
 
 ## Phase 10: Signal Bridge
