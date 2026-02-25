@@ -235,11 +235,16 @@ fn cmd_migrate_xdg(force: bool) -> Result<(), String> {
     let config_dir = home_env()
         .map(|h| PathBuf::from(h).join(".config/phylactery"))
         .ok_or("cannot determine config directory")?;
-    let _ = std::fs::create_dir_all(&config_dir);
+    if let Err(e) = std::fs::create_dir_all(&config_dir) {
+        eprintln!("Warning: failed to create config directory {}: {e}", config_dir.display());
+    }
     let config_link = config_dir.join("config.toml");
     let config_target = xdg_home.join("config.toml");
-    let _ = std::os::unix::fs::symlink(&config_target, &config_link);
-    eprintln!("Created symlink {} -> {}", config_link.display(), config_target.display());
+    if let Err(e) = std::os::unix::fs::symlink(&config_target, &config_link) {
+        eprintln!("Warning: failed to create config symlink: {e}");
+    } else {
+        eprintln!("Created symlink {} -> {}", config_link.display(), config_target.display());
+    }
 
     eprintln!();
     eprintln!("Migration complete. Set PHYLACTERY_HOME={}", xdg_home.display());
