@@ -174,6 +174,7 @@ it through LAW.md (rules) or JOB.md (role), not by editing SOUL.md directly.
 | `phyl-tool-session` | Tool (server mode): ask_human + done. | Rust |
 | `phyl-tool-mcp` | Tool (server mode): bridge to any MCP server. | Rust |
 | `phyl-bridge-signal` | Bridge: two-way Signal Messenger interface. | Rust |
+| `phyl-poll` | Poller: run commands on intervals, start sessions on change. | Rust |
 
 Each tool and model adapter is a standalone executable. They can be written in
 any language. The contract is JSON on stdin/stdout.
@@ -553,6 +554,103 @@ the primary external interface and we want reliability. Other bridges are
 standalone programs in any language — the bridge protocol is just SSE + HTTP.
 They can be installed and run independently.
 
+### Polling: `phyl-poll`
+
+A Rust binary in the workspace. Turns any command into an event source by
+running it on an interval and starting a session when the output changes. This
+is how the agent reacts to the outside world without dedicated integrations —
+new mail, git commits, server health, RSS feeds, anything with a CLI.
+
+`phyl-poll` is a long-lived process (like bridges). It reads `[[poll]]`
+sections from `config.toml`, runs each command on its configured interval,
+and compares the output to the last known result. On change, it creates a new
+session via `POST /sessions` with a prompt that includes the old output, new
+output, and a diff.
+
+**Example configuration** (in `config.toml`):
+
+```toml
+[[poll]]
+name = "github-notifications"
+command = "gh"
+args = ["api", "/notifications", "--jq", ".[].subject.title"]
+interval = 300                      # seconds (5 minutes)
+prompt = "Review these new GitHub notifications and summarize what needs my attention."
+
+[[poll]]
+name = "server-health"
+command = "curl"
+args = ["-sf", "https://example.com/health"]
+interval = 60
+prompt = "The health check output changed. Analyze what's different and whether I should be concerned."
+
+[[poll]]
+name = "mailbox"
+shell = true                        # run via sh -c instead of exec
+command = "notmuch search --output=summary tag:inbox AND tag:unread | head -20"
+interval = 120
+prompt = "New unread mail arrived. Summarize the new messages."
+```
+
+**How it works:**
+
+1. On startup, read all `[[poll]]` rules from `config.toml`
+2. Create `$PHYLACTERY_HOME/poll/` directory if it doesn't exist (gitignored)
+3. For each rule, on each interval tick:
+   a. Run the command, capture stdout (stderr goes to phyl-poll's stderr)
+   b. Read the previous output from `poll/<name>.last` (if it exists)
+   c. If no previous output: save current output as baseline, skip
+   d. If output is identical: skip
+   e. If output changed: assemble a session prompt and POST /sessions
+   f. Save current output as the new `poll/<name>.last`
+4. The session prompt is assembled as:
+
+```
+{rule.prompt}
+
+=== PREVIOUS OUTPUT ===
+{previous output}
+
+=== CURRENT OUTPUT ===
+{current output}
+
+=== DIFF ===
+{unified diff of previous → current}
+```
+
+The model gets the rule's configured prompt (the "what to do about it"
+instruction), both versions of the output (for full context), and a diff
+(for quick orientation). The model then has tools available to take action —
+it's a normal session.
+
+**State management:**
+
+- Previous outputs stored as plain files in `$PHYLACTERY_HOME/poll/<name>.last`
+- The `poll/` directory is gitignored — this is transient operational state,
+  not knowledge
+- If a `.last` file is deleted, the next poll re-establishes a baseline
+  (no false-positive session on restart)
+- Command exit code is tracked: non-zero is logged to stderr but not treated
+  as a change (avoids spurious sessions from transient failures)
+
+**Scheduling:**
+
+- Each rule runs independently on its own interval
+- Initial polls are staggered (100ms apart) to avoid launching all commands
+  simultaneously on startup
+- If a command takes longer than its interval, the next tick is skipped (no
+  pile-up)
+- Minimum interval enforced at 10 seconds to prevent accidental abuse
+
+**Failure handling:**
+
+- Command timeout: killed after 30 seconds (configurable per rule)
+- Command exits non-zero: log warning, do not update `.last`, do not create
+  session
+- Daemon unavailable: log error, retry on next interval
+- Session creation fails (e.g., max concurrent): log warning, retry on next
+  change detection
+
 ### The `ask_human` Tool
 
 Provided by `phyl-tool-session` (server mode). When the model needs human
@@ -765,6 +863,22 @@ env = { BRAVE_API_KEY = "$BRAVE_API_KEY" }
 phone = "+1234567890"           # Agent's Signal number
 owner = "+0987654321"           # Owner's number (only accept from this)
 signal_cli = "signal-cli"       # Path to signal-cli binary
+
+# Poll rules (used by phyl-poll)
+[[poll]]
+name = "github-notifications"
+command = "gh"
+args = ["api", "/notifications", "--jq", ".[].subject.title"]
+interval = 300                      # seconds between polls
+prompt = "Review these GitHub notifications and summarize what needs attention."
+
+[[poll]]
+name = "server-health"
+command = "curl"
+args = ["-sf", "https://example.com/health"]
+interval = 60
+prompt = "The health check output changed. Analyze what's different."
+# timeout = 10                      # Optional: command timeout in seconds (default 30)
 ```
 
 Tools are discovered from `$PATH` — any executable named `phyl-tool-*` is a
@@ -971,6 +1085,41 @@ The agentic loop, testable without a daemon.
       - Only accept messages from configured owner number
 - [x] Config: signal phone numbers, signal-cli path
 - [ ] Test: end-to-end question/answer cycle over Signal
+
+### Phase 11: Polling
+
+A generic mechanism for "poll a command, and if the output changed, start a
+session with the diff and an action prompt." This turns any command-line tool
+into an event source for the agent.
+
+- [ ] Implement `phyl-poll`:
+      - Standalone binary, similar to bridges. Runs as a long-lived process
+        alongside the daemon.
+      - Read `[[poll]]` configs from `$PHYLACTERY_HOME/config.toml`
+      - For each poll rule, run the configured command on the configured
+        interval
+      - Compare output to last known result (stored in
+        `$PHYLACTERY_HOME/poll/<name>.last`)
+      - On first run (no `.last` file): store the result, do not start a
+        session (establishes baseline)
+      - On change: POST /sessions to the daemon with a prompt assembled from
+        the rule's `prompt` template plus a diff of old → new output
+      - On no change: do nothing, sleep until next interval
+      - Stagger initial poll execution to avoid thundering herd on startup
+      - Graceful shutdown on Ctrl-C (`tokio::signal::ctrl_c()`)
+      - Log poll activity to stderr (same convention as other binaries)
+- [ ] Config types: `PollConfig` with `name`, `command`, `args`, `interval`,
+      `prompt`, optional `env` and `shell` (default: run command directly;
+      `shell = true` runs via `sh -c`)
+- [ ] State directory: `$PHYLACTERY_HOME/poll/` (gitignored, created on
+      first run)
+- [ ] Prompt assembly: the session prompt includes the rule's `prompt`
+      template, the previous output, the new output, and a unified diff.
+      The model gets full context to decide what to do.
+- [ ] Add `phyl-poll` to workspace `Cargo.toml`
+- [ ] Unit tests: config parsing, diff generation, prompt assembly, state
+      file read/write, interval scheduling
+- [ ] Test: configure a poll rule, verify session creation on change
 
 ---
 
