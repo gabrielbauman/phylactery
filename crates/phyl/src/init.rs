@@ -1,3 +1,4 @@
+use anyhow::{bail, Context};
 use phyl_core::home_dir;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -17,17 +18,17 @@ use std::process::Command;
 /// - sessions/.gitignore (ignore everything under sessions/)
 /// - poll/.gitignore (ignore poll state files)
 /// - ~/.config/phylactery/ symlink (XDG config)
-pub fn run(path: Option<&str>) -> Result<(), String> {
+pub fn run(path: Option<&str>) -> anyhow::Result<()> {
     let home = match path {
         Some(p) => PathBuf::from(p),
         None => home_dir(),
     };
 
     if home.join(".git").exists() {
-        return Err(format!(
+        bail!(
             "{} is already initialized (has .git)",
             home.display()
-        ));
+        );
     }
 
     // Create the directory structure
@@ -63,7 +64,7 @@ pub fn run(path: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-fn create_dirs(home: &Path) -> Result<(), String> {
+fn create_dirs(home: &Path) -> anyhow::Result<()> {
     let dirs = [
         home.to_path_buf(),
         home.join("knowledge"),
@@ -76,13 +77,13 @@ fn create_dirs(home: &Path) -> Result<(), String> {
     ];
 
     for dir in &dirs {
-        fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {}", dir.display(), e))?;
+        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
     }
 
     Ok(())
 }
 
-fn git_init(home: &Path) -> Result<(), String> {
+fn git_init(home: &Path) -> anyhow::Result<()> {
     run_git(home, &["init"])?;
     // Configure the repo for the agent: disable signing, set default identity
     run_git(home, &["config", "commit.gpgSign", "false"])?;
@@ -91,26 +92,26 @@ fn git_init(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn git_add_and_commit(home: &Path) -> Result<(), String> {
+fn git_add_and_commit(home: &Path) -> anyhow::Result<()> {
     run_git(home, &["add", "-A"])?;
     run_git(home, &["commit", "-m", "phyl init: initialize agent home"])
 }
 
-fn run_git(home: &Path, args: &[&str]) -> Result<(), String> {
+fn run_git(home: &Path, args: &[&str]) -> anyhow::Result<()> {
     let output = Command::new("git")
         .args(args)
         .current_dir(home)
         .output()
-        .map_err(|e| format!("failed to run git: {}", e))?;
+        .context("failed to run git")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git {} failed: {}", args.join(" "), stderr.trim()));
+        bail!("git {} failed: {}", args.join(" "), stderr.trim());
     }
     Ok(())
 }
 
-fn write_config(home: &Path) -> Result<(), String> {
+fn write_config(home: &Path) -> anyhow::Result<()> {
     // Generate config with the default socket path resolved at runtime
     let socket_path = std::env::var("XDG_RUNTIME_DIR")
         .map(|dir| format!("{}/phylactery.sock", dir))
@@ -174,14 +175,14 @@ auto_commit = true
     write_file(&home.join("config.toml"), &config)
 }
 
-fn write_secrets_env(home: &Path) -> Result<(), String> {
+fn write_secrets_env(home: &Path) -> anyhow::Result<()> {
     let path = home.join("secrets.env");
     write_file(&path, SECRETS_SEED)?;
 
     // chmod 600
     let perms = fs::Permissions::from_mode(0o600);
     fs::set_permissions(&path, perms)
-        .map_err(|e| format!("failed to set permissions on secrets.env: {e}"))?;
+        .context("failed to set permissions on secrets.env")?;
 
     Ok(())
 }
@@ -206,12 +207,12 @@ fn create_xdg_symlink(home: &Path) {
     }
 }
 
-fn write_file(path: &Path, content: &str) -> Result<(), String> {
+fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {}", parent.display(), e))?;
+            .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(path, content).map_err(|e| format!("failed to write {}: {}", path.display(), e))
+    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
 const LAW_SEED: &str = "\

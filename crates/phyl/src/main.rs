@@ -12,9 +12,17 @@ mod cmd_watch;
 mod format;
 mod init;
 
+use anyhow::{bail, Context};
 use std::process;
 
 fn main() {
+    if let Err(e) = try_main() {
+        eprintln!("phyl: {e:#}");
+        process::exit(1);
+    }
+}
+
+fn try_main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
@@ -26,25 +34,18 @@ fn main() {
         "init" => {
             let path = args.get(2).map(|s| s.as_str());
             let systemd = args.iter().any(|a| a == "--systemd");
-            if let Err(e) = init::run(path) {
-                eprintln!("phyl init: {}", e);
-                process::exit(1);
-            }
+            init::run(path).context("init failed")?;
             if systemd {
-                if let Err(e) = cmd_setup::run(&["systemd".to_string()]) {
-                    eprintln!("phyl setup systemd: {}", e);
-                    process::exit(1);
-                }
+                cmd_setup::run(&["systemd".to_string()]).context("setup systemd failed")?;
             }
         }
         "start" => {
             let detach = args.iter().any(|a| a == "-d");
             let all = args.iter().any(|a| a == "--all");
             if all {
-                run_async(cmd_start::run_all());
-            } else if let Err(e) = cmd_start::run(detach) {
-                eprintln!("phyl start: {}", e);
-                process::exit(1);
+                run_async(cmd_start::run_all())?;
+            } else {
+                cmd_start::run(detach).context("start failed")?;
             }
         }
         "session" => {
@@ -60,79 +61,45 @@ fn main() {
             }
             let prompt = match prompt {
                 Some(p) => p,
-                None => {
-                    eprintln!("Usage: phyl session [-d] \"prompt\"");
-                    process::exit(1);
-                }
+                None => bail!("Usage: phyl session [-d] \"prompt\""),
             };
-            run_async(cmd_session::run(prompt, detach));
+            run_async(cmd_session::run(prompt, detach))?;
         }
         "ls" => {
-            run_async(cmd_ls::run());
+            run_async(cmd_ls::run())?;
         }
         "status" => {
-            let id = match args.get(2) {
-                Some(id) => id.as_str(),
-                None => {
-                    eprintln!("Usage: phyl status <session-id>");
-                    process::exit(1);
-                }
-            };
-            run_async(cmd_status::run(id));
+            let id = args.get(2).map(|s| s.as_str())
+                .context("Usage: phyl status <session-id>")?;
+            run_async(cmd_status::run(id))?;
         }
         "say" => {
-            let id = match args.get(2) {
-                Some(id) => id,
-                None => {
-                    eprintln!("Usage: phyl say <session-id> \"message\"");
-                    process::exit(1);
-                }
-            };
-            let message = match args.get(3) {
-                Some(m) => m.as_str(),
-                None => {
-                    eprintln!("Usage: phyl say <session-id> \"message\"");
-                    process::exit(1);
-                }
-            };
-            run_async(cmd_say::run(id, message));
+            let id = args.get(2)
+                .context("Usage: phyl say <session-id> \"message\"")?;
+            let message = args.get(3).map(|s| s.as_str())
+                .context("Usage: phyl say <session-id> \"message\"")?;
+            run_async(cmd_say::run(id, message))?;
         }
         "log" => {
-            let id = match args.get(2) {
-                Some(id) => id.as_str(),
-                None => {
-                    eprintln!("Usage: phyl log <session-id>");
-                    process::exit(1);
-                }
-            };
-            run_async(cmd_log::run(id));
+            let id = args.get(2).map(|s| s.as_str())
+                .context("Usage: phyl log <session-id>")?;
+            run_async(cmd_log::run(id))?;
         }
         "stop" => {
-            let id = match args.get(2) {
-                Some(id) => id.as_str(),
-                None => {
-                    eprintln!("Usage: phyl stop <session-id>");
-                    process::exit(1);
-                }
-            };
-            run_async(cmd_stop::run(id));
+            let id = args.get(2).map(|s| s.as_str())
+                .context("Usage: phyl stop <session-id>")?;
+            run_async(cmd_stop::run(id))?;
         }
         "watch" => {
-            run_async(cmd_watch::run());
+            run_async(cmd_watch::run())?;
         }
         "config" => {
             let sub_args: Vec<String> = args[2..].to_vec();
-            if let Err(e) = cmd_config::run(&sub_args) {
-                eprintln!("phyl config: {}", e);
-                process::exit(1);
-            }
+            cmd_config::run(&sub_args).context("config failed")?;
         }
         "setup" => {
             let sub_args: Vec<String> = args[2..].to_vec();
-            if let Err(e) = cmd_setup::run(&sub_args) {
-                eprintln!("phyl setup: {}", e);
-                process::exit(1);
-            }
+            cmd_setup::run(&sub_args).context("setup failed")?;
         }
         "help" | "--help" | "-h" => usage(),
         cmd => {
@@ -142,15 +109,14 @@ fn main() {
             process::exit(1);
         }
     }
+
+    Ok(())
 }
 
 /// Run an async function on a tokio runtime.
-fn run_async(future: impl std::future::Future<Output = Result<(), String>>) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    if let Err(e) = rt.block_on(future) {
-        eprintln!("phyl: {}", e);
-        process::exit(1);
-    }
+fn run_async(future: impl std::future::Future<Output = anyhow::Result<()>>) -> anyhow::Result<()> {
+    let rt = tokio::runtime::Runtime::new().context("failed to create async runtime")?;
+    rt.block_on(future)
 }
 
 fn usage() {

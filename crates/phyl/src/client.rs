@@ -39,6 +39,8 @@ impl std::fmt::Display for ClientError {
     }
 }
 
+impl std::error::Error for ClientError {}
+
 impl ClientError {
     fn connect(e: impl std::fmt::Display) -> Self {
         ClientError {

@@ -1,21 +1,20 @@
 //! `phyl watch` — live feed of all sessions via SSE, with inline question answering.
 
+use anyhow::bail;
 use crate::client;
 use http_body_util::BodyExt;
 use phyl_core::LogEntry;
 use std::io::{self, BufRead, Write};
 
-pub async fn run() -> Result<(), String> {
+pub async fn run() -> anyhow::Result<()> {
     let socket = client::socket_path();
 
     eprintln!("Watching all sessions (Ctrl-C to quit)...");
 
-    let (status, body) = client::get_stream(&socket, "/feed")
-        .await
-        .map_err(|e| e.to_string())?;
+    let (status, body) = client::get_stream(&socket, "/feed").await?;
 
     if !status.is_success() {
-        return Err(format!("HTTP {}: feed endpoint returned {}", status.as_u16(), status));
+        bail!("HTTP {}: feed endpoint returned {}", status.as_u16(), status);
     }
 
     // Read SSE stream frame by frame.

@@ -1,5 +1,6 @@
 //! `phyl status <id>` — show session detail.
 
+use anyhow::{bail, Context};
 use crate::client;
 use crate::format::format_log_entry;
 use phyl_core::{LogEntry, SessionInfo};
@@ -13,19 +14,17 @@ struct SessionDetail {
     recent_log: Vec<LogEntry>,
 }
 
-pub async fn run(id: &str) -> Result<(), String> {
+pub async fn run(id: &str) -> anyhow::Result<()> {
     let socket = client::socket_path();
     let path = format!("/sessions/{id}");
-    let (status, body) = client::get(&socket, &path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (status, body) = client::get(&socket, &path).await?;
 
     if !status.is_success() {
-        return Err(format!("HTTP {}: {}", status.as_u16(), body.trim()));
+        bail!("HTTP {}: {}", status.as_u16(), body.trim());
     }
 
     let detail: SessionDetail =
-        serde_json::from_str(&body).map_err(|e| format!("bad response: {e}"))?;
+        serde_json::from_str(&body).context("bad response")?;
 
     let status_str = format!("{:?}", detail.info.status).to_lowercase();
     let created = detail.info.created_at.format("%Y-%m-%d %H:%M:%S UTC");

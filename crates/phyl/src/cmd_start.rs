@@ -1,9 +1,10 @@
 //! `phyl start [-d]` — launch the phylactd daemon.
 
+use anyhow::{bail, Context};
 use std::process::{Command, Stdio};
 
 /// Run the `start` command.
-pub fn run(detach: bool) -> Result<(), String> {
+pub fn run(detach: bool) -> anyhow::Result<()> {
     let binary = find_daemon()?;
 
     if detach {
@@ -13,19 +14,19 @@ pub fn run(detach: bool) -> Result<(), String> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("failed to start daemon: {e}"))?;
+            .context("failed to start daemon")?;
 
         eprintln!("phylactd started (pid {})", child.id());
         Ok(())
     } else {
         // Foreground: exec the daemon (replace this process).
         let err = exec_replace(&binary);
-        Err(format!("failed to exec daemon: {err}"))
+        bail!("failed to exec daemon: {err}");
     }
 }
 
 /// Find the phylactd binary.
-fn find_daemon() -> Result<String, String> {
+fn find_daemon() -> anyhow::Result<String> {
     // Check $PATH.
     if let Ok(output) = Command::new("which").arg("phylactd").output() {
         if output.status.success() {
@@ -51,21 +52,21 @@ fn find_daemon() -> Result<String, String> {
 }
 
 /// Start all services in foreground (no systemd).
-pub async fn run_all() -> Result<(), String> {
+pub async fn run_all() -> anyhow::Result<()> {
     let home = phyl_core::home_dir();
     if !home.exists() {
-        return Err(format!(
+        bail!(
             "{} does not exist. Run `phyl init` first.",
             home.display()
-        ));
+        );
     }
 
     let config = {
         let config_path = home.join("config.toml");
         let contents = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("failed to read config.toml: {e}"))?;
+            .context("failed to read config.toml")?;
         toml::from_str::<phyl_core::Config>(&contents)
-            .map_err(|e| format!("failed to parse config.toml: {e}"))?
+            .context("failed to parse config.toml")?
     };
 
     let mut children = Vec::new();
@@ -75,7 +76,7 @@ pub async fn run_all() -> Result<(), String> {
     eprintln!("Starting phylactd...");
     let daemon = Command::new(&daemon_bin)
         .spawn()
-        .map_err(|e| format!("failed to start daemon: {e}"))?;
+        .context("failed to start daemon")?;
     children.push(("phylactd", daemon));
 
     // Wait for socket to appear
@@ -93,7 +94,7 @@ pub async fn run_all() -> Result<(), String> {
             eprintln!("Starting phyl-poll...");
             let child = Command::new(&bin)
                 .spawn()
-                .map_err(|e| format!("failed to start phyl-poll: {e}"))?;
+                .context("failed to start phyl-poll")?;
             children.push(("phyl-poll", child));
         }
     }
@@ -105,7 +106,7 @@ pub async fn run_all() -> Result<(), String> {
                 eprintln!("Starting phyl-listen...");
                 let child = Command::new(&bin)
                     .spawn()
-                    .map_err(|e| format!("failed to start phyl-listen: {e}"))?;
+                    .context("failed to start phyl-listen")?;
                 children.push(("phyl-listen", child));
             }
         }
@@ -118,7 +119,7 @@ pub async fn run_all() -> Result<(), String> {
                 eprintln!("Starting phyl-bridge-signal...");
                 let child = Command::new(&bin)
                     .spawn()
-                    .map_err(|e| format!("failed to start phyl-bridge-signal: {e}"))?;
+                    .context("failed to start phyl-bridge-signal")?;
                 children.push(("phyl-bridge-signal", child));
             }
         }
@@ -129,7 +130,7 @@ pub async fn run_all() -> Result<(), String> {
     // Wait for Ctrl-C
     tokio::signal::ctrl_c()
         .await
-        .map_err(|e| format!("signal handler failed: {e}"))?;
+        .context("signal handler failed")?;
 
     eprintln!("\nStopping all services...");
 

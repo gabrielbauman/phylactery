@@ -3,6 +3,7 @@
 //! Without `-d`: POST /sessions, then tail log.jsonl to stdout.
 //! With `-d`: POST /sessions, print session ID, return.
 
+use anyhow::{bail, Context};
 use crate::client;
 use crate::format::format_log_entry;
 use phyl_core::LogEntry;
@@ -15,20 +16,18 @@ struct CreateResponse {
     status: String,
 }
 
-pub async fn run(prompt: &str, detach: bool) -> Result<(), String> {
+pub async fn run(prompt: &str, detach: bool) -> anyhow::Result<()> {
     let socket = client::socket_path();
     let body = serde_json::json!({ "prompt": prompt }).to_string();
 
-    let (status, resp) = client::post(&socket, "/sessions", &body)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (status, resp) = client::post(&socket, "/sessions", &body).await?;
 
     if !status.is_success() {
-        return Err(format!("HTTP {}: {}", status.as_u16(), resp.trim()));
+        bail!("HTTP {}: {}", status.as_u16(), resp.trim());
     }
 
     let created: CreateResponse =
-        serde_json::from_str(&resp).map_err(|e| format!("bad response: {e}"))?;
+        serde_json::from_str(&resp).context("bad response")?;
 
     if detach {
         println!("{}", created.id);
@@ -53,7 +52,7 @@ async fn tail_log(
     log_path: &std::path::Path,
     socket: &str,
     session_id: &str,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     let mut offset: u64 = 0;

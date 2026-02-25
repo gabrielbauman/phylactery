@@ -1,20 +1,19 @@
 //! `phyl log <id>` — tail a session's log.jsonl.
 
+use anyhow::{bail, Context};
 use crate::client;
 use crate::format::format_log_entry;
 use phyl_core::{LogEntry, LogEntryType};
 
-pub async fn run(id: &str) -> Result<(), String> {
+pub async fn run(id: &str) -> anyhow::Result<()> {
     let socket = client::socket_path();
 
     // Verify session exists.
     let path = format!("/sessions/{id}");
-    let (status, body) = client::get(&socket, &path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (status, body) = client::get(&socket, &path).await?;
 
     if !status.is_success() {
-        return Err(format!("HTTP {}: {}", status.as_u16(), body.trim()));
+        bail!("HTTP {}: {}", status.as_u16(), body.trim());
     }
 
     // Determine log file path.
@@ -42,10 +41,10 @@ pub async fn run(id: &str) -> Result<(), String> {
 }
 
 /// Dump all log entries from a file.
-fn dump_log(log_path: &std::path::Path) -> Result<(), String> {
+fn dump_log(log_path: &std::path::Path) -> anyhow::Result<()> {
     use std::io::{BufRead, BufReader};
 
-    let file = std::fs::File::open(log_path).map_err(|e| format!("cannot open log: {e}"))?;
+    let file = std::fs::File::open(log_path).context("cannot open log")?;
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
@@ -65,7 +64,7 @@ fn dump_log(log_path: &std::path::Path) -> Result<(), String> {
 }
 
 /// Tail a log file, printing new entries as they appear.
-async fn tail_log(log_path: &std::path::Path, socket: &str, session_id: &str) -> Result<(), String> {
+async fn tail_log(log_path: &std::path::Path, socket: &str, session_id: &str) -> anyhow::Result<()> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     let mut offset: u64 = 0;
