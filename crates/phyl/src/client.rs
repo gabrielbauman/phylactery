@@ -45,9 +45,7 @@ impl ClientError {
     fn connect(e: impl std::fmt::Display) -> Self {
         ClientError {
             status: None,
-            message: format!(
-                "cannot connect to daemon: {e}\nIs phylactd running? Try: phyl start"
-            ),
+            message: format!("cannot connect to daemon: {e}\nIs phylactd running? Try: phyl start"),
         }
     }
 
@@ -66,13 +64,13 @@ pub async fn get(socket: &str, path: &str) -> Result<(StatusCode, String), Clien
         .uri(path)
         .header("Host", "localhost")
         .body(Empty::<Bytes>::new())
-        .map_err(|e| ClientError::request(e))?;
+        .map_err(ClientError::request)?;
 
     let (status, body) = send_request(socket, req).await?;
     let body_bytes = body
         .collect()
         .await
-        .map_err(|e| ClientError::request(e))?
+        .map_err(ClientError::request)?
         .to_bytes();
     let text = String::from_utf8_lossy(&body_bytes).to_string();
     Ok((status, text))
@@ -90,13 +88,13 @@ pub async fn post(
         .header("Host", "localhost")
         .header("Content-Type", "application/json")
         .body(Full::new(Bytes::from(json_body.to_string())))
-        .map_err(|e| ClientError::request(e))?;
+        .map_err(ClientError::request)?;
 
     let (status, body) = send_request(socket, req).await?;
     let body_bytes = body
         .collect()
         .await
-        .map_err(|e| ClientError::request(e))?
+        .map_err(ClientError::request)?
         .to_bytes();
     let text = String::from_utf8_lossy(&body_bytes).to_string();
     Ok((status, text))
@@ -109,29 +107,26 @@ pub async fn delete(socket: &str, path: &str) -> Result<(StatusCode, String), Cl
         .uri(path)
         .header("Host", "localhost")
         .body(Empty::<Bytes>::new())
-        .map_err(|e| ClientError::request(e))?;
+        .map_err(ClientError::request)?;
 
     let (status, body) = send_request(socket, req).await?;
     let body_bytes = body
         .collect()
         .await
-        .map_err(|e| ClientError::request(e))?
+        .map_err(ClientError::request)?
         .to_bytes();
     let text = String::from_utf8_lossy(&body_bytes).to_string();
     Ok((status, text))
 }
 
 /// Make a GET request and return the raw streaming body (for SSE).
-pub async fn get_stream(
-    socket: &str,
-    path: &str,
-) -> Result<(StatusCode, Incoming), ClientError> {
+pub async fn get_stream(socket: &str, path: &str) -> Result<(StatusCode, Incoming), ClientError> {
     let req = Request::builder()
         .method(Method::GET)
         .uri(path)
         .header("Host", "localhost")
         .body(Empty::<Bytes>::new())
-        .map_err(|e| ClientError::request(e))?;
+        .map_err(ClientError::request)?;
 
     send_request(socket, req).await
 }
@@ -148,12 +143,10 @@ where
 {
     let stream = UnixStream::connect(socket)
         .await
-        .map_err(|e| ClientError::connect(e))?;
+        .map_err(ClientError::connect)?;
     let io = TokioIo::new(stream);
 
-    let (mut sender, conn) = http1::handshake(io)
-        .await
-        .map_err(|e| ClientError::connect(e))?;
+    let (mut sender, conn) = http1::handshake(io).await.map_err(ClientError::connect)?;
 
     // Drive the connection in the background.
     tokio::spawn(async move {
@@ -163,7 +156,7 @@ where
     let resp = sender
         .send_request(req)
         .await
-        .map_err(|e| ClientError::request(e))?;
+        .map_err(ClientError::request)?;
 
     let status = resp.status();
     let body = resp.into_body();

@@ -1,7 +1,7 @@
 //! `phyl say <id> "msg"` — inject an event into a running session.
 
-use anyhow::bail;
 use crate::client;
+use anyhow::bail;
 
 pub async fn run(id: &str, message: &str) -> anyhow::Result<()> {
     let socket = client::socket_path();

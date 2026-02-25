@@ -1,4 +1,4 @@
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use phyl_core::home_dir;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -25,10 +25,7 @@ pub fn run(path: Option<&str>) -> anyhow::Result<()> {
     };
 
     if home.join(".git").exists() {
-        bail!(
-            "{} is already initialized (has .git)",
-            home.display()
-        );
+        bail!("{} is already initialized (has .git)", home.display());
     }
 
     // Create the directory structure
@@ -181,8 +178,7 @@ fn write_secrets_env(home: &Path) -> anyhow::Result<()> {
 
     // chmod 600
     let perms = fs::Permissions::from_mode(0o600);
-    fs::set_permissions(&path, perms)
-        .context("failed to set permissions on secrets.env")?;
+    fs::set_permissions(&path, perms).context("failed to set permissions on secrets.env")?;
 
     Ok(())
 }
@@ -196,7 +192,7 @@ fn create_xdg_symlink(home: &Path) {
 
     if let Ok(user_home) = std::env::var("HOME") {
         let config_dir = PathBuf::from(&user_home).join(".config/phylactery");
-        if let Err(_) = fs::create_dir_all(&config_dir) {
+        if fs::create_dir_all(&config_dir).is_err() {
             return;
         }
         let link = config_dir.join("config.toml");

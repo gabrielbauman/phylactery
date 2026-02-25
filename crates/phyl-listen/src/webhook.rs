@@ -4,11 +4,11 @@
 use crate::daemon_client;
 use crate::expand_env;
 use crate::rate_limit::{DedupCache, RateLimiter};
+use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
-use axum::Router;
 use hmac::{Hmac, Mac};
 use phyl_core::ListenHookConfig;
 use sha2::Sha256;
@@ -84,17 +84,20 @@ async fn handle_webhook(
         .collect();
 
     if matching_hooks.is_empty() {
-        return (StatusCode::NOT_FOUND, "No hook configured for this path".to_string());
+        return (
+            StatusCode::NOT_FOUND,
+            "No hook configured for this path".to_string(),
+        );
     }
 
     // Check body size against the first hook's limit
-    if let Some(hook) = matching_hooks.first() {
-        if body.len() > hook.max_body_size {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "Payload too large".to_string(),
-            );
-        }
+    if let Some(hook) = matching_hooks.first()
+        && body.len() > hook.max_body_size
+    {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Payload too large".to_string(),
+        );
     }
 
     // Verify webhook secret (shared for hooks on the same path)
@@ -179,12 +182,12 @@ async fn handle_webhook(
 }
 
 fn resolve_prompt(hook: &ListenHookConfig, headers: &HeaderMap) -> String {
-    if let Some(route_header) = &hook.route_header {
-        if let Some(header_value) = headers.get(route_header.as_str()) {
-            let val = header_value.to_str().unwrap_or("");
-            if let Some(routed_prompt) = hook.routes.get(val) {
-                return routed_prompt.clone();
-            }
+    if let Some(route_header) = &hook.route_header
+        && let Some(header_value) = headers.get(route_header.as_str())
+    {
+        let val = header_value.to_str().unwrap_or("");
+        if let Some(routed_prompt) = hook.routes.get(val) {
+            return routed_prompt.clone();
         }
     }
     hook.prompt.clone()
@@ -195,8 +198,7 @@ fn verify_signature(headers: &HeaderMap, body: &[u8], secret: &str) -> bool {
     if let Some(sig_header) = headers.get("X-Hub-Signature-256") {
         let sig_str = sig_header.to_str().unwrap_or("");
         if let Some(hex_sig) = sig_str.strip_prefix("sha256=") {
-            let mut mac =
-                HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key creation");
+            let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key creation");
             mac.update(body);
             if let Ok(expected) = hex::decode(hex_sig) {
                 return mac.verify_slice(&expected).is_ok();
@@ -226,10 +228,10 @@ fn format_relevant_headers(headers: &HeaderMap) -> String {
 
     let mut lines = vec!["Headers:".to_string()];
     for name in &relevant {
-        if let Some(value) = headers.get(*name) {
-            if let Ok(v) = value.to_str() {
-                lines.push(format!("  {name}: {v}"));
-            }
+        if let Some(value) = headers.get(*name)
+            && let Ok(v) = value.to_str()
+        {
+            lines.push(format!("  {name}: {v}"));
         }
     }
     lines.join("\n")

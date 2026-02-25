@@ -1,6 +1,6 @@
 //! `phyl setup` subcommands — service management and system setup.
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use phyl_core::{Config, home_dir};
 use std::path::{Path, PathBuf};
 
@@ -31,8 +31,7 @@ fn cmd_systemd() -> anyhow::Result<()> {
     let home_str = home.to_string_lossy();
 
     let systemd_dir = dirs_config_home().join("systemd/user");
-    std::fs::create_dir_all(&systemd_dir)
-        .context("failed to create systemd dir")?;
+    std::fs::create_dir_all(&systemd_dir).context("failed to create systemd dir")?;
 
     let bin_dir = find_bin_dir();
 
@@ -59,31 +58,31 @@ fn cmd_systemd() -> anyhow::Result<()> {
     }
 
     // Generate phyl-listen.service if listen config exists
-    if let Some(listen) = &config.listen {
-        if !listen.hook.is_empty() || !listen.sse.is_empty() || !listen.watch.is_empty() {
-            let unit = generate_unit(
-                "Phylactery listener",
-                &format!("{bin_dir}/phyl-listen"),
-                &home_str,
-                Some("phylactd.service"),
-            );
-            write_unit(&systemd_dir, "phyl-listen.service", &unit)?;
-            eprintln!("  wrote phyl-listen.service");
-        }
+    if let Some(listen) = &config.listen
+        && (!listen.hook.is_empty() || !listen.sse.is_empty() || !listen.watch.is_empty())
+    {
+        let unit = generate_unit(
+            "Phylactery listener",
+            &format!("{bin_dir}/phyl-listen"),
+            &home_str,
+            Some("phylactd.service"),
+        );
+        write_unit(&systemd_dir, "phyl-listen.service", &unit)?;
+        eprintln!("  wrote phyl-listen.service");
     }
 
     // Generate phyl-bridge-signal.service if bridge configured
-    if let Some(bridge) = &config.bridge {
-        if bridge.signal.is_some() {
-            let unit = generate_unit(
-                "Phylactery Signal bridge",
-                &format!("{bin_dir}/phyl-bridge-signal"),
-                &home_str,
-                Some("phylactd.service"),
-            );
-            write_unit(&systemd_dir, "phyl-bridge-signal.service", &unit)?;
-            eprintln!("  wrote phyl-bridge-signal.service");
-        }
+    if let Some(bridge) = &config.bridge
+        && bridge.signal.is_some()
+    {
+        let unit = generate_unit(
+            "Phylactery Signal bridge",
+            &format!("{bin_dir}/phyl-bridge-signal"),
+            &home_str,
+            Some("phylactd.service"),
+        );
+        write_unit(&systemd_dir, "phyl-bridge-signal.service", &unit)?;
+        eprintln!("  wrote phyl-bridge-signal.service");
     }
 
     // Reload systemd
@@ -216,20 +215,22 @@ fn cmd_migrate_xdg(force: bool) -> anyhow::Result<()> {
     }
 
     if !force {
-        eprintln!("This will move {} to {}", legacy_home.display(), xdg_home.display());
+        eprintln!(
+            "This will move {} to {}",
+            legacy_home.display(),
+            xdg_home.display()
+        );
         eprintln!("Make sure all services are stopped. Use --force to proceed.");
         return Ok(());
     }
 
     // Create parent directory
     if let Some(parent) = xdg_home.parent() {
-        std::fs::create_dir_all(parent)
-            .context("failed to create directory")?;
+        std::fs::create_dir_all(parent).context("failed to create directory")?;
     }
 
     // Move directory
-    std::fs::rename(&legacy_home, &xdg_home)
-        .context("failed to move directory")?;
+    std::fs::rename(&legacy_home, &xdg_home).context("failed to move directory")?;
     eprintln!("Moved {} -> {}", legacy_home.display(), xdg_home.display());
 
     // Create config symlink
@@ -237,18 +238,28 @@ fn cmd_migrate_xdg(force: bool) -> anyhow::Result<()> {
         .map(|h| PathBuf::from(h).join(".config/phylactery"))
         .context("cannot determine config directory")?;
     if let Err(e) = std::fs::create_dir_all(&config_dir) {
-        eprintln!("Warning: failed to create config directory {}: {e}", config_dir.display());
+        eprintln!(
+            "Warning: failed to create config directory {}: {e}",
+            config_dir.display()
+        );
     }
     let config_link = config_dir.join("config.toml");
     let config_target = xdg_home.join("config.toml");
     if let Err(e) = std::os::unix::fs::symlink(&config_target, &config_link) {
         eprintln!("Warning: failed to create config symlink: {e}");
     } else {
-        eprintln!("Created symlink {} -> {}", config_link.display(), config_target.display());
+        eprintln!(
+            "Created symlink {} -> {}",
+            config_link.display(),
+            config_target.display()
+        );
     }
 
     eprintln!();
-    eprintln!("Migration complete. Set PHYLACTERY_HOME={}", xdg_home.display());
+    eprintln!(
+        "Migration complete. Set PHYLACTERY_HOME={}",
+        xdg_home.display()
+    );
     eprintln!("Or re-run: phyl setup systemd");
 
     Ok(())
@@ -282,8 +293,7 @@ WantedBy=default.target
 }
 
 fn write_unit(dir: &Path, name: &str, content: &str) -> anyhow::Result<()> {
-    std::fs::write(dir.join(name), content)
-        .with_context(|| format!("failed to write {name}"))
+    std::fs::write(dir.join(name), content).with_context(|| format!("failed to write {name}"))
 }
 
 fn run_cmd(cmd: &str, args: &[&str]) -> anyhow::Result<()> {
@@ -294,15 +304,18 @@ fn run_cmd(cmd: &str, args: &[&str]) -> anyhow::Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("  warning: {cmd} {} failed: {}", args.join(" "), stderr.trim());
+        eprintln!(
+            "  warning: {cmd} {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        );
     }
     Ok(())
 }
 
 fn load_config(home: &Path) -> anyhow::Result<Config> {
     let config_path = home.join("config.toml");
-    let contents = std::fs::read_to_string(&config_path)
-        .context("failed to read config.toml")?;
+    let contents = std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
     toml::from_str(&contents).context("failed to parse config.toml")
 }
 
@@ -333,9 +346,7 @@ fn check_service_status(service: &str) -> String {
         .output();
 
     match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => "stopped".to_string(),
     }
 }
@@ -373,10 +384,10 @@ async fn get_session_summary(socket: &str) -> anyhow::Result<String> {
 }
 
 fn find_bin_dir() -> String {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            return dir.to_string_lossy().to_string();
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        return dir.to_string_lossy().to_string();
     }
     // Fallback
     home_env()

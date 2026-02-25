@@ -312,7 +312,11 @@ fn recover_sessions(state: &AppState) {
             summary,
         };
 
-        state.lock().unwrap_or_else(|e| e.into_inner()).sessions.insert(session_id, tracked);
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sessions
+            .insert(session_id, tracked);
     }
 }
 
@@ -469,7 +473,11 @@ async fn handle_create_session(
         summary: None,
     };
 
-    state.lock().unwrap_or_else(|e| e.into_inner()).sessions.insert(session_id, tracked);
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sessions
+        .insert(session_id, tracked);
 
     eprintln!("phylactd: started session {session_id} (pid {pid})");
 
@@ -598,10 +606,7 @@ async fn handle_inject_event(
         .ok_or((StatusCode::NOT_FOUND, format!("Session {id} not found")))?;
 
     if tracked.status != SessionStatus::Running {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("Session {id} is not running"),
-        ));
+        return Err((StatusCode::CONFLICT, format!("Session {id} is not running")));
     }
 
     let fifo_path = tracked.session_dir.join("events");
@@ -687,7 +692,11 @@ async fn handle_feed(
 // ---------------------------------------------------------------------------
 
 /// Spawn a phyl-run process for a new session.
-fn spawn_session(session_dir: &std::path::Path, prompt: &str, home: &std::path::Path) -> Result<Child, String> {
+fn spawn_session(
+    session_dir: &std::path::Path,
+    prompt: &str,
+    home: &std::path::Path,
+) -> Result<Child, String> {
     // Find phyl-run binary. Prefer $PATH, then same directory as phylactd.
     let phyl_run = find_binary("phyl-run")?;
 
@@ -709,22 +718,22 @@ fn spawn_session(session_dir: &std::path::Path, prompt: &str, home: &std::path::
 /// Find a binary by name: check $PATH, then the directory of the current executable.
 fn find_binary(name: &str) -> Result<String, String> {
     // Check if it's on PATH using `which`.
-    if let Ok(output) = Command::new("which").arg(name).output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(path);
-            }
+    if let Ok(output) = Command::new("which").arg(name).output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(path);
         }
     }
 
     // Check same directory as current executable.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(name);
-            if candidate.exists() {
-                return Ok(candidate.to_string_lossy().to_string());
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Ok(candidate.to_string_lossy().to_string());
         }
     }
 
@@ -892,10 +901,10 @@ fn read_session_prompt(session_dir: &std::path::Path) -> Option<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
-            if entry.entry_type == LogEntryType::User {
-                return entry.content;
-            }
+        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line)
+            && entry.entry_type == LogEntryType::User
+        {
+            return entry.content;
         }
     }
     None
@@ -915,10 +924,10 @@ fn read_session_summary(session_dir: &std::path::Path) -> Option<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line) {
-            if entry.entry_type == LogEntryType::Done {
-                return entry.summary.or(entry.content);
-            }
+        if let Ok(entry) = serde_json::from_str::<LogEntry>(&line)
+            && entry.entry_type == LogEntryType::Done
+        {
+            return entry.summary.or(entry.content);
         }
     }
     None

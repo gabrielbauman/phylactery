@@ -12,7 +12,7 @@ mod cmd_watch;
 mod format;
 mod init;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use std::process;
 
 fn main() {
@@ -69,24 +69,33 @@ fn try_main() -> anyhow::Result<()> {
             run_async(cmd_ls::run())?;
         }
         "status" => {
-            let id = args.get(2).map(|s| s.as_str())
+            let id = args
+                .get(2)
+                .map(|s| s.as_str())
                 .context("Usage: phyl status <session-id>")?;
             run_async(cmd_status::run(id))?;
         }
         "say" => {
-            let id = args.get(2)
+            let id = args
+                .get(2)
                 .context("Usage: phyl say <session-id> \"message\"")?;
-            let message = args.get(3).map(|s| s.as_str())
+            let message = args
+                .get(3)
+                .map(|s| s.as_str())
                 .context("Usage: phyl say <session-id> \"message\"")?;
             run_async(cmd_say::run(id, message))?;
         }
         "log" => {
-            let id = args.get(2).map(|s| s.as_str())
+            let id = args
+                .get(2)
+                .map(|s| s.as_str())
                 .context("Usage: phyl log <session-id>")?;
             run_async(cmd_log::run(id))?;
         }
         "stop" => {
-            let id = args.get(2).map(|s| s.as_str())
+            let id = args
+                .get(2)
+                .map(|s| s.as_str())
                 .context("Usage: phyl stop <session-id>")?;
             run_async(cmd_stop::run(id))?;
         }

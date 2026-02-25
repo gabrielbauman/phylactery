@@ -1,7 +1,7 @@
 //! `phyl stop <id>` — kill a running session.
 
-use anyhow::bail;
 use crate::client;
+use anyhow::bail;
 
 pub async fn run(id: &str) -> anyhow::Result<()> {
     let socket = client::socket_path();

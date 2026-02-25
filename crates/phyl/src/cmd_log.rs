@@ -1,8 +1,8 @@
 //! `phyl log <id>` — tail a session's log.jsonl.
 
-use anyhow::{bail, Context};
 use crate::client;
 use crate::format::format_log_entry;
+use anyhow::{Context, bail};
 use phyl_core::{LogEntry, LogEntryType};
 
 pub async fn run(id: &str) -> anyhow::Result<()> {
@@ -64,7 +64,11 @@ fn dump_log(log_path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 /// Tail a log file, printing new entries as they appear.
-async fn tail_log(log_path: &std::path::Path, socket: &str, session_id: &str) -> anyhow::Result<()> {
+async fn tail_log(
+    log_path: &std::path::Path,
+    socket: &str,
+    session_id: &str,
+) -> anyhow::Result<()> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     let mut offset: u64 = 0;
@@ -97,36 +101,31 @@ async fn tail_log(log_path: &std::path::Path, socket: &str, session_id: &str) ->
         }
 
         // Check if session is still running.
-        if let Ok((st, body)) = client::get(socket, &format!("/sessions/{session_id}")).await {
-            if st.is_success() {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-                    if let Some(s) = val.get("status").and_then(|v| v.as_str()) {
-                        if s != "running" {
-                            // Drain remaining entries.
-                            if let Ok(mut file) = std::fs::File::open(log_path) {
-                                use std::io::Read;
-                                let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-                                if size > offset {
-                                    let _ = file.seek(SeekFrom::Start(offset));
-                                    let mut buf = String::new();
-                                    let _ = file.read_to_string(&mut buf);
-                                    for line in buf.lines() {
-                                        if line.trim().is_empty() {
-                                            continue;
-                                        }
-                                        if let Ok(entry) =
-                                            serde_json::from_str::<LogEntry>(line)
-                                        {
-                                            format_log_entry(&entry);
-                                        }
-                                    }
-                                }
-                            }
-                            return Ok(());
+        if let Ok((st, body)) = client::get(socket, &format!("/sessions/{session_id}")).await
+            && st.is_success()
+            && let Ok(val) = serde_json::from_str::<serde_json::Value>(&body)
+            && let Some(s) = val.get("status").and_then(|v| v.as_str())
+            && s != "running"
+        {
+            // Drain remaining entries.
+            if let Ok(mut file) = std::fs::File::open(log_path) {
+                use std::io::Read;
+                let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+                if size > offset {
+                    let _ = file.seek(SeekFrom::Start(offset));
+                    let mut buf = String::new();
+                    let _ = file.read_to_string(&mut buf);
+                    for line in buf.lines() {
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
+                            format_log_entry(&entry);
                         }
                     }
                 }
             }
+            return Ok(());
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;

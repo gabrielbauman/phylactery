@@ -42,10 +42,7 @@ pub async fn run_sse_listener(
                 backoff = Duration::from_secs(5);
             }
             Err(e) => {
-                eprintln!(
-                    "phyl-listen: [{}] connection error: {e}",
-                    config.name
-                );
+                eprintln!("phyl-listen: [{}] connection error: {e}", config.name);
             }
         }
 
@@ -85,14 +82,13 @@ async fn connect_and_stream(
         .parse::<hyper::Uri>()
         .map_err(|e| format!("invalid URL: {e}"))?;
 
-    let host = parsed_url
-        .host()
-        .ok_or("URL has no host")?
-        .to_string();
-    let port = parsed_url.port_u16().unwrap_or(match parsed_url.scheme_str() {
-        Some("https") => 443,
-        _ => 80,
-    });
+    let host = parsed_url.host().ok_or("URL has no host")?.to_string();
+    let port = parsed_url
+        .port_u16()
+        .unwrap_or(match parsed_url.scheme_str() {
+            Some("https") => 443,
+            _ => 80,
+        });
 
     let stream = tokio::time::timeout(
         Duration::from_secs(30),
@@ -258,10 +254,10 @@ async fn process_sse_event(
         return;
     }
 
-    if let Some(id) = event_id {
-        if dedup_cache.is_duplicate(id) {
-            return;
-        }
+    if let Some(id) = event_id
+        && dedup_cache.is_duplicate(id)
+    {
+        return;
     }
 
     if !rate_limiter.check(&config.name, config.rate_limit) {
@@ -291,10 +287,7 @@ async fn process_sse_event(
 
     match daemon_client::create_session(socket, &session_prompt).await {
         Ok(id) => {
-            eprintln!(
-                "phyl-listen: [{}] session created: {id}",
-                config.name
-            );
+            eprintln!("phyl-listen: [{}] session created: {id}", config.name);
         }
         Err(e) => {
             eprintln!(

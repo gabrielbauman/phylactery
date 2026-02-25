@@ -1,8 +1,8 @@
 //! `phyl status <id>` — show session detail.
 
-use anyhow::{bail, Context};
 use crate::client;
 use crate::format::format_log_entry;
+use anyhow::{Context, bail};
 use phyl_core::{LogEntry, SessionInfo};
 use serde::Deserialize;
 
@@ -23,8 +23,7 @@ pub async fn run(id: &str) -> anyhow::Result<()> {
         bail!("HTTP {}: {}", status.as_u16(), body.trim());
     }
 
-    let detail: SessionDetail =
-        serde_json::from_str(&body).context("bad response")?;
+    let detail: SessionDetail = serde_json::from_str(&body).context("bad response")?;
 
     let status_str = format!("{:?}", detail.info.status).to_lowercase();
     let created = detail.info.created_at.format("%Y-%m-%d %H:%M:%S UTC");

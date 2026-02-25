@@ -1,6 +1,6 @@
 //! `phyl config` subcommands — configuration management.
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use phyl_core::{Config, home_dir};
 use std::path::{Path, PathBuf};
 
@@ -26,8 +26,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 fn cmd_show() -> anyhow::Result<()> {
     let home = home_dir();
     let config_path = home.join("config.toml");
-    let contents = std::fs::read_to_string(&config_path)
-        .context("failed to read config.toml")?;
+    let contents = std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
 
     // Load secrets for masking
     let secrets = load_secrets(&home);
@@ -53,11 +52,9 @@ fn cmd_show() -> anyhow::Result<()> {
 fn cmd_validate() -> anyhow::Result<()> {
     let home = home_dir();
     let config_path = home.join("config.toml");
-    let contents = std::fs::read_to_string(&config_path)
-        .context("failed to read config.toml")?;
+    let contents = std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
 
-    let config: Config = toml::from_str(&contents)
-        .context("config.toml parse error")?;
+    let config: Config = toml::from_str(&contents).context("config.toml parse error")?;
 
     let mut warnings = Vec::new();
 
@@ -125,9 +122,8 @@ fn cmd_edit() -> anyhow::Result<()> {
     let home = home_dir();
     let config_path = home.join("config.toml");
 
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| {
-        std::env::var("VISUAL").unwrap_or_else(|_| "vi".to_string())
-    });
+    let editor = std::env::var("EDITOR")
+        .unwrap_or_else(|_| std::env::var("VISUAL").unwrap_or_else(|_| "vi".to_string()));
 
     let status = std::process::Command::new(&editor)
         .arg(&config_path)
@@ -250,18 +246,15 @@ signal_cli = "signal-cli"
             .to_string()
         }
         other => {
-            bail!(
-                "unknown config section: {other}. Use: mcp, poll, hook, sse, watch, bridge"
-            );
+            bail!("unknown config section: {other}. Use: mcp, poll, hook, sse, watch, bridge");
         }
     };
 
     // Append to config.toml
-    let mut contents = std::fs::read_to_string(&config_path)
-        .context("failed to read config.toml")?;
+    let mut contents =
+        std::fs::read_to_string(&config_path).context("failed to read config.toml")?;
     contents.push_str(&snippet);
-    std::fs::write(&config_path, &contents)
-        .context("failed to write config.toml")?;
+    std::fs::write(&config_path, &contents).context("failed to write config.toml")?;
 
     eprintln!("Added {section_type} section to config.toml");
     eprintln!("Edit with: phyl config edit");
@@ -285,10 +278,12 @@ fn cmd_add_secret(args: &[String]) -> anyhow::Result<()> {
     // Check if key already exists
     for line in contents.lines() {
         let line = line.trim();
-        if let Some((k, _)) = line.split_once('=') {
-            if k.trim() == key {
-                bail!("secret '{key}' already exists. Remove it first with: phyl config remove-secret {key}");
-            }
+        if let Some((k, _)) = line.split_once('=')
+            && k.trim() == key
+        {
+            bail!(
+                "secret '{key}' already exists. Remove it first with: phyl config remove-secret {key}"
+            );
         }
     }
 
@@ -297,8 +292,7 @@ fn cmd_add_secret(args: &[String]) -> anyhow::Result<()> {
         contents.push('\n');
     }
     contents.push_str(&format!("{key}={value}\n"));
-    std::fs::write(&secrets_path, &contents)
-        .context("failed to write secrets.env")?;
+    std::fs::write(&secrets_path, &contents).context("failed to write secrets.env")?;
 
     eprintln!("Added secret: {key}");
     Ok(())
@@ -338,18 +332,17 @@ fn cmd_remove_secret(args: &[String]) -> anyhow::Result<()> {
     let key = &args[0];
     let home = home_dir();
     let secrets_path = home.join("secrets.env");
-    let contents = std::fs::read_to_string(&secrets_path)
-        .context("failed to read secrets.env")?;
+    let contents = std::fs::read_to_string(&secrets_path).context("failed to read secrets.env")?;
 
     let mut found = false;
     let mut new_contents = String::new();
     for line in contents.lines() {
         let trimmed = line.trim();
-        if let Some((k, _)) = trimmed.split_once('=') {
-            if k.trim() == key {
-                found = true;
-                continue;
-            }
+        if let Some((k, _)) = trimmed.split_once('=')
+            && k.trim() == key
+        {
+            found = true;
+            continue;
         }
         new_contents.push_str(line);
         new_contents.push('\n');
@@ -359,8 +352,7 @@ fn cmd_remove_secret(args: &[String]) -> anyhow::Result<()> {
         bail!("secret '{key}' not found");
     }
 
-    std::fs::write(&secrets_path, &new_contents)
-        .context("failed to write secrets.env")?;
+    std::fs::write(&secrets_path, &new_contents).context("failed to write secrets.env")?;
 
     eprintln!("Removed secret: {key}");
     Ok(())
@@ -500,10 +492,7 @@ secret = "$MISSING_SECRET"
         let secrets = vec![("MY_KEY".to_string(), "value".to_string())];
         let mut warnings = Vec::new();
         check_secret_refs(config, &secrets, &mut warnings);
-        assert!(
-            warnings.is_empty(),
-            "expected no warnings: {warnings:?}"
-        );
+        assert!(warnings.is_empty(), "expected no warnings: {warnings:?}");
     }
 
     #[test]

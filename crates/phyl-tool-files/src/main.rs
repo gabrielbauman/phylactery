@@ -64,9 +64,10 @@ fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "search_files".to_string(),
-            description: "Search for a text pattern in files under a directory, returning matching lines. \
+            description:
+                "Search for a text pattern in files under a directory, returning matching lines. \
                 Can search session scratch, knowledge base, or any readable path."
-                .to_string(),
+                    .to_string(),
             mode: ToolMode::Oneshot,
             parameters: serde_json::json!({
                 "type": "object",
@@ -116,11 +117,13 @@ fn resolve_path(path: &str) -> PathBuf {
 fn validate_path(resolved: &Path, writable: bool) -> Result<(), String> {
     // Canonicalize what we can — for new files, canonicalize the parent.
     let canonical = if resolved.exists() {
-        resolved.canonicalize()
+        resolved
+            .canonicalize()
             .map_err(|e| format!("Cannot resolve path {}: {e}", resolved.display()))?
     } else if let Some(parent) = resolved.parent() {
         if parent.exists() {
-            let canon_parent = parent.canonicalize()
+            let canon_parent = parent
+                .canonicalize()
                 .map_err(|e| format!("Cannot resolve parent {}: {e}", parent.display()))?;
             canon_parent.join(resolved.file_name().unwrap_or_default())
         } else {
@@ -141,10 +144,10 @@ fn validate_path(resolved: &Path, writable: bool) -> Result<(), String> {
         .and_then(|p| p.canonicalize().ok().or(Some(p)));
 
     // Scratch is always allowed for both reads and writes.
-    if let Some(ref scratch) = scratch {
-        if canonical.starts_with(scratch) {
-            return Ok(());
-        }
+    if let Some(ref scratch) = scratch
+        && canonical.starts_with(scratch)
+    {
+        return Ok(());
     }
 
     if writable {
@@ -161,10 +164,10 @@ fn validate_path(resolved: &Path, writable: bool) -> Result<(), String> {
         ))
     } else {
         // Reads allowed from home, plus system paths.
-        if let Some(ref home) = home {
-            if canonical.starts_with(home) {
-                return Ok(());
-            }
+        if let Some(ref home) = home
+            && canonical.starts_with(home)
+        {
+            return Ok(());
         }
         let system_paths = ["/usr", "/lib", "/bin", "/etc"];
         for sys in &system_paths {
@@ -289,16 +292,16 @@ fn handle_write_file(arguments: &serde_json::Value) -> ToolOutput {
     }
 
     // Create parent directories if they don't exist.
-    if let Some(parent) = resolved.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return ToolOutput {
-                output: None,
-                error: Some(format!(
-                    "Failed to create directory {}: {e}",
-                    parent.display()
-                )),
-            };
-        }
+    if let Some(parent) = resolved.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return ToolOutput {
+            output: None,
+            error: Some(format!(
+                "Failed to create directory {}: {e}",
+                parent.display()
+            )),
+        };
     }
 
     match std::fs::write(&resolved, content) {
@@ -358,9 +361,7 @@ fn auto_commit_knowledge(home: &Path, file_path: &Path) -> Result<(), String> {
     }
 
     // Compute the relative path from home for the commit message and git add.
-    let rel_path = file_path
-        .strip_prefix(home)
-        .unwrap_or(file_path);
+    let rel_path = file_path.strip_prefix(home).unwrap_or(file_path);
 
     let git_lock_path = home.join(".git.lock");
 
@@ -429,7 +430,9 @@ fn acquire_flock(path: &Path) -> Result<i32, String> {
 
     let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
     if ret != 0 {
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(format!(
             "flock failed on {}: {}",
             path.display(),
@@ -461,7 +464,7 @@ fn handle_search_files(arguments: &serde_json::Value) -> ToolOutput {
     let search_dir = arguments
         .get("path")
         .and_then(|v| v.as_str())
-        .map(|p| resolve_path(p))
+        .map(resolve_path)
         .unwrap_or_else(|| resolve_path("."));
 
     if let Err(e) = validate_path(&search_dir, false) {
@@ -529,10 +532,10 @@ fn search_recursive(
         let path = entry.path();
 
         // Skip hidden files/dirs and common binary/large dirs.
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') || name == "node_modules" || name == "target" {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && (name.starts_with('.') || name == "node_modules" || name == "target")
+        {
+            continue;
         }
 
         if path.is_dir() {
@@ -609,18 +612,26 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars_simple() {
-        unsafe { std::env::set_var("PHYL_TEST_VAR", "/test/path"); }
+        unsafe {
+            std::env::set_var("PHYL_TEST_VAR", "/test/path");
+        }
         let result = expand_env_vars("$PHYL_TEST_VAR/knowledge/");
         assert_eq!(result, "/test/path/knowledge/");
-        unsafe { std::env::remove_var("PHYL_TEST_VAR"); }
+        unsafe {
+            std::env::remove_var("PHYL_TEST_VAR");
+        }
     }
 
     #[test]
     fn test_expand_env_vars_braced() {
-        unsafe { std::env::set_var("PHYL_TEST_VAR2", "/braced"); }
+        unsafe {
+            std::env::set_var("PHYL_TEST_VAR2", "/braced");
+        }
         let result = expand_env_vars("${PHYL_TEST_VAR2}/sub");
         assert_eq!(result, "/braced/sub");
-        unsafe { std::env::remove_var("PHYL_TEST_VAR2"); }
+        unsafe {
+            std::env::remove_var("PHYL_TEST_VAR2");
+        }
     }
 
     #[test]
@@ -643,7 +654,9 @@ mod tests {
 
     #[test]
     fn test_resolve_path_with_env_expansion() {
-        unsafe { std::env::set_var("PHYLACTERY_HOME", "/test/home"); }
+        unsafe {
+            std::env::set_var("PHYLACTERY_HOME", "/test/home");
+        }
         let result = resolve_path("$PHYLACTERY_HOME/knowledge/contacts/alice.md");
         assert_eq!(
             result,
@@ -685,14 +698,18 @@ mod tests {
         let file_path = scratch.join("test.txt");
 
         // Set session dir so the scratch directory is allowed.
-        unsafe { std::env::set_var("PHYLACTERY_SESSION_DIR", tmp.to_string_lossy().as_ref()); }
+        unsafe {
+            std::env::set_var("PHYLACTERY_SESSION_DIR", tmp.to_string_lossy().as_ref());
+        }
 
         let result = handle_write_file(&serde_json::json!({
             "path": file_path.to_string_lossy(),
             "content": "hello world"
         }));
 
-        unsafe { std::env::remove_var("PHYLACTERY_SESSION_DIR"); }
+        unsafe {
+            std::env::remove_var("PHYLACTERY_SESSION_DIR");
+        }
 
         assert!(result.error.is_none());
         assert!(result.output.unwrap().contains("Wrote 11 bytes"));
@@ -705,14 +722,24 @@ mod tests {
     fn test_handle_write_file_no_content() {
         let result = handle_write_file(&serde_json::json!({"path": "/tmp/test.txt"}));
         assert!(result.error.is_some());
-        assert!(result.error.unwrap().contains("Missing required argument: content"));
+        assert!(
+            result
+                .error
+                .unwrap()
+                .contains("Missing required argument: content")
+        );
     }
 
     #[test]
     fn test_handle_search_files_no_pattern() {
         let result = handle_search_files(&serde_json::json!({}));
         assert!(result.error.is_some());
-        assert!(result.error.unwrap().contains("Missing required argument: pattern"));
+        assert!(
+            result
+                .error
+                .unwrap()
+                .contains("Missing required argument: pattern")
+        );
     }
 
     #[test]
@@ -724,14 +751,18 @@ mod tests {
         std::fs::write(tmp.join("b.txt"), "no match here\n").unwrap();
 
         // Set PHYLACTERY_HOME so the temp dir passes path validation.
-        unsafe { std::env::set_var("PHYLACTERY_HOME", tmp.to_string_lossy().as_ref()); }
+        unsafe {
+            std::env::set_var("PHYLACTERY_HOME", tmp.to_string_lossy().as_ref());
+        }
 
         let result = handle_search_files(&serde_json::json!({
             "pattern": "hello",
             "path": tmp.to_string_lossy()
         }));
 
-        unsafe { std::env::remove_var("PHYLACTERY_HOME"); }
+        unsafe {
+            std::env::remove_var("PHYLACTERY_HOME");
+        }
 
         assert!(result.error.is_none());
         let output = result.output.unwrap();

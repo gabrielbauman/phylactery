@@ -77,8 +77,8 @@ impl McpServer {
         cmd.args(&config.args);
         for (k, v) in &config.env {
             // Expand $VAR references from the process environment.
-            let expanded = if v.starts_with('$') {
-                std::env::var(&v[1..]).unwrap_or_default()
+            let expanded = if let Some(var_name) = v.strip_prefix('$') {
+                std::env::var(var_name).unwrap_or_default()
             } else {
                 v.clone()
             };
@@ -157,9 +157,12 @@ impl McpServer {
             ));
         }
 
-        let result = resp
-            .result
-            .ok_or_else(|| format!("MCP server '{}': no result in tools/list response", self.name))?;
+        let result = resp.result.ok_or_else(|| {
+            format!(
+                "MCP server '{}': no result in tools/list response",
+                self.name
+            )
+        })?;
 
         let tools: Vec<McpToolDef> = serde_json::from_value(
             result
@@ -209,7 +212,11 @@ impl McpServer {
 
         if text_parts.is_empty() {
             // Check if there's an isError flag.
-            if result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if result
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 return Err("MCP tool returned an error with no text content".to_string());
             }
             Ok(String::new())
@@ -402,13 +409,19 @@ fn run_spec() -> Result<(), String> {
                         }
                     }
                     Err(e) => {
-                        eprintln!("phyl-tool-mcp: failed to list tools from '{}': {e}", config.name);
+                        eprintln!(
+                            "phyl-tool-mcp: failed to list tools from '{}': {e}",
+                            config.name
+                        );
                     }
                 }
                 server.shutdown();
             }
             Err(e) => {
-                eprintln!("phyl-tool-mcp: failed to start MCP server '{}': {e}", config.name);
+                eprintln!(
+                    "phyl-tool-mcp: failed to start MCP server '{}': {e}",
+                    config.name
+                );
             }
         }
     }
@@ -442,8 +455,7 @@ fn run_serve() -> Result<(), String> {
                         let server_idx = servers.len();
                         for tool in tools {
                             let prefixed_name = format!("{}_{}", config.name, tool.name);
-                            tool_routing
-                                .insert(prefixed_name, (server_idx, tool.name.clone()));
+                            tool_routing.insert(prefixed_name, (server_idx, tool.name.clone()));
                             server.tool_names.push(tool.name);
                         }
                     }
@@ -500,30 +512,28 @@ fn run_serve() -> Result<(), String> {
         };
 
         let response = match tool_routing.get(&req.name) {
-            Some((server_idx, original_name)) => {
-                match servers.get_mut(*server_idx) {
-                    Some(server) => match server.call_tool(original_name, &req.arguments) {
-                        Ok(output) => ServerResponse {
-                            id: req.id,
-                            output: Some(output),
-                            error: None,
-                            signal: None,
-                        },
-                        Err(e) => ServerResponse {
-                            id: req.id,
-                            output: None,
-                            error: Some(e),
-                            signal: None,
-                        },
-                    },
-                    None => ServerResponse {
+            Some((server_idx, original_name)) => match servers.get_mut(*server_idx) {
+                Some(server) => match server.call_tool(original_name, &req.arguments) {
+                    Ok(output) => ServerResponse {
                         id: req.id,
-                        output: None,
-                        error: Some(format!("MCP server index {} out of range", server_idx)),
+                        output: Some(output),
+                        error: None,
                         signal: None,
                     },
-                }
-            }
+                    Err(e) => ServerResponse {
+                        id: req.id,
+                        output: None,
+                        error: Some(e),
+                        signal: None,
+                    },
+                },
+                None => ServerResponse {
+                    id: req.id,
+                    output: None,
+                    error: Some(format!("MCP server index {} out of range", server_idx)),
+                    signal: None,
+                },
+            },
             None => ServerResponse {
                 id: req.id,
                 output: None,
@@ -623,7 +633,8 @@ mod tests {
 
     #[test]
     fn test_json_rpc_response_error() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.id, Some(1));
         assert!(resp.result.is_none());
@@ -690,10 +701,7 @@ mod tests {
             "filesystem_read_file".to_string(),
             (0, "read_file".to_string()),
         );
-        routing.insert(
-            "brave-search_search".to_string(),
-            (1, "search".to_string()),
-        );
+        routing.insert("brave-search_search".to_string(), (1, "search".to_string()));
 
         let (idx, original) = routing.get("filesystem_read_file").unwrap();
         assert_eq!(*idx, 0);
@@ -703,7 +711,7 @@ mod tests {
         assert_eq!(*idx, 1);
         assert_eq!(original, "search");
 
-        assert!(routing.get("unknown_tool").is_none());
+        assert!(!routing.contains_key("unknown_tool"));
     }
 
     #[test]
@@ -759,8 +767,8 @@ mod tests {
     fn test_env_var_expansion() {
         // Test the $VAR expansion logic.
         let v = "$HOME";
-        let expanded = if v.starts_with('$') {
-            std::env::var(&v[1..]).unwrap_or_default()
+        let expanded = if let Some(var_name) = v.strip_prefix('$') {
+            std::env::var(var_name).unwrap_or_default()
         } else {
             v.to_string()
         };
@@ -819,10 +827,7 @@ mod tests {
                 "version": "0.1.0"
             }
         });
-        assert_eq!(
-            params["protocolVersion"].as_str().unwrap(),
-            "2024-11-05"
-        );
+        assert_eq!(params["protocolVersion"].as_str().unwrap(), "2024-11-05");
         assert_eq!(params["clientInfo"]["name"].as_str().unwrap(), "phylactery");
     }
 }

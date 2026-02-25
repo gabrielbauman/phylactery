@@ -114,19 +114,15 @@ async fn signal_receive(cfg: &SignalBridgeConfig) -> Result<Vec<(String, String)
         if trimmed.is_empty() {
             continue;
         }
-        if let Ok(env) = serde_json::from_str::<SignalEnvelope>(trimmed) {
-            if let Some(inner) = env.envelope {
-                let source = inner
-                    .source_number
-                    .or(inner.source)
-                    .unwrap_or_default();
-                if let Some(dm) = inner.data_message {
-                    if let Some(msg) = dm.message {
-                        if !msg.is_empty() {
-                            messages.push((source, msg));
-                        }
-                    }
-                }
+        if let Ok(env) = serde_json::from_str::<SignalEnvelope>(trimmed)
+            && let Some(inner) = env.envelope
+        {
+            let source = inner.source_number.or(inner.source).unwrap_or_default();
+            if let Some(dm) = inner.data_message
+                && let Some(msg) = dm.message
+                && !msg.is_empty()
+            {
+                messages.push((source, msg));
             }
         }
     }
@@ -370,9 +366,7 @@ async fn signal_listener(socket: String, cfg: SignalBridgeConfig, state: SharedS
                 for (source, text) in messages {
                     // Only accept messages from the configured owner.
                     if source != cfg.owner {
-                        eprintln!(
-                            "phyl-bridge-signal: ignoring message from {source} (not owner)"
-                        );
+                        eprintln!("phyl-bridge-signal: ignoring message from {source} (not owner)");
                         continue;
                     }
 
@@ -390,12 +384,7 @@ async fn signal_listener(socket: String, cfg: SignalBridgeConfig, state: SharedS
 }
 
 /// Process a single inbound Signal message from the owner.
-async fn process_inbound(
-    socket: &str,
-    cfg: &SignalBridgeConfig,
-    state: &SharedState,
-    text: &str,
-) {
+async fn process_inbound(socket: &str, cfg: &SignalBridgeConfig, state: &SharedState, text: &str) {
     let trimmed = text.trim();
 
     // Check if there's a pending question to answer.
@@ -442,13 +431,11 @@ async fn process_inbound(
                     .unwrap_or_else(|| "?".to_string());
                 let short_id = &id[..8.min(id.len())];
                 eprintln!("phyl-bridge-signal: started session [{short_id}]");
-                let _ =
-                    signal_send(cfg, &format!("[{short_id}] Session started.")).await;
+                let _ = signal_send(cfg, &format!("[{short_id}] Session started.")).await;
             }
             Err(e) => {
                 eprintln!("phyl-bridge-signal: failed to start session: {e}");
-                let _ =
-                    signal_send(cfg, &format!("Failed to start session: {e}")).await;
+                let _ = signal_send(cfg, &format!("Failed to start session: {e}")).await;
             }
         }
     }
@@ -458,10 +445,11 @@ async fn process_inbound(
 /// one of the question's options, return the option text. Otherwise return
 /// the raw reply.
 fn resolve_answer(reply: &str, options: &[String]) -> String {
-    if let Ok(n) = reply.parse::<usize>() {
-        if n >= 1 && n <= options.len() {
-            return options[n - 1].clone();
-        }
+    if let Ok(n) = reply.parse::<usize>()
+        && n >= 1
+        && n <= options.len()
+    {
+        return options[n - 1].clone();
     }
     reply.to_string()
 }
@@ -481,15 +469,12 @@ fn load_config() -> Result<(SignalBridgeConfig, String), String> {
     let config: Config =
         toml::from_str(&contents).map_err(|e| format!("invalid config.toml: {e}"))?;
 
-    let signal_cfg = config
-        .bridge
-        .and_then(|b| b.signal)
-        .ok_or_else(|| {
-            "no [bridge.signal] section in config.toml\n\
+    let signal_cfg = config.bridge.and_then(|b| b.signal).ok_or_else(|| {
+        "no [bridge.signal] section in config.toml\n\
              Add:\n  [bridge.signal]\n  phone = \"+1234567890\"\n  \
              owner = \"+0987654321\"\n  signal_cli = \"signal-cli\""
-                .to_string()
-        })?;
+            .to_string()
+    })?;
 
     Ok((signal_cfg, config.daemon.socket))
 }
@@ -545,11 +530,7 @@ async fn main() {
         Arc::clone(&state),
     ));
 
-    let listen_handle = tokio::spawn(signal_listener(
-        socket,
-        signal_cfg,
-        Arc::clone(&state),
-    ));
+    let listen_handle = tokio::spawn(signal_listener(socket, signal_cfg, Arc::clone(&state)));
 
     // Run until either task completes (shouldn't happen) or Ctrl-C.
     tokio::select! {
@@ -575,7 +556,11 @@ mod tests {
 
     #[test]
     fn test_resolve_answer_numeric_option() {
-        let options = vec!["yes".to_string(), "no".to_string(), "edit draft".to_string()];
+        let options = vec![
+            "yes".to_string(),
+            "no".to_string(),
+            "edit draft".to_string(),
+        ];
         assert_eq!(resolve_answer("1", &options), "yes");
         assert_eq!(resolve_answer("2", &options), "no");
         assert_eq!(resolve_answer("3", &options), "edit draft");

@@ -197,7 +197,7 @@ pub struct LogEntry {
 // --- Configuration types ---
 
 /// Top-level agent configuration from `config.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub daemon: DaemonConfig,
@@ -304,21 +304,6 @@ impl Default for GitConfig {
         Self {
             auto_commit: true,
             remote: None,
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            daemon: DaemonConfig::default(),
-            session: SessionConfig::default(),
-            model: ModelConfig::default(),
-            git: GitConfig::default(),
-            mcp: Vec::new(),
-            bridge: None,
-            poll: Vec::new(),
-            listen: None,
         }
     }
 }
@@ -526,10 +511,10 @@ pub fn home_dir() -> std::path::PathBuf {
         None
     };
 
-    if let Some(ref xdg) = xdg_path {
-        if xdg.exists() {
-            return xdg.clone();
-        }
+    if let Some(ref xdg) = xdg_path
+        && xdg.exists()
+    {
+        return xdg.clone();
     }
 
     // Legacy path.

@@ -58,7 +58,10 @@ fn main() {
         eprintln!("phyl-run: failed to write PID file: {e}");
     }
 
-    eprintln!("phyl-run: starting session in {}", args.session_dir.display());
+    eprintln!(
+        "phyl-run: starting session in {}",
+        args.session_dir.display()
+    );
 
     // Run the session. On exit, clean up.
     let exit_code = match run_session(&args) {
@@ -149,7 +152,8 @@ fn run_session(args: &Args) -> Result<(), String> {
 
     // Step 6: Discover tools from $PATH.
     let discovered = discover_tools();
-    eprintln!("phyl-run: discovered {} tool spec(s) from {} executable(s)",
+    eprintln!(
+        "phyl-run: discovered {} tool spec(s) from {} executable(s)",
         discovered.iter().map(|d| d.specs.len()).sum::<usize>(),
         discovered.len(),
     );
@@ -159,11 +163,23 @@ fn run_session(args: &Args) -> Result<(), String> {
     let tool_names: Vec<String> = all_specs.iter().map(|s| s.name.clone()).collect();
 
     // Step 5: Assemble system prompt.
-    let system_prompt = build_system_prompt(&law, &job, &soul, &index, &knowledge_summary, &session_id, &args.session_dir, &tool_names);
+    let system_prompt = build_system_prompt(
+        &law,
+        &job,
+        &soul,
+        &index,
+        &knowledge_summary,
+        &session_id,
+        &args.session_dir,
+        &tool_names,
+    );
 
     // Step 7: Start server-mode tools.
     let mut server_tools = start_server_tools(&discovered)?;
-    eprintln!("phyl-run: started {} server-mode tool process(es)", server_tools.len());
+    eprintln!(
+        "phyl-run: started {} server-mode tool process(es)",
+        server_tools.len()
+    );
 
     // Build a mapping from tool name → (executable path, mode, which server process).
     let tool_map = build_tool_map(&discovered);
@@ -201,8 +217,22 @@ fn run_session(args: &Args) -> Result<(), String> {
     ];
 
     // Write initial log entries.
-    write_log(&mut log_file, LogEntryType::System, Some("Session started"), None, &[], None)?;
-    write_log(&mut log_file, LogEntryType::User, Some(&args.prompt), None, &[], None)?;
+    write_log(
+        &mut log_file,
+        LogEntryType::System,
+        Some("Session started"),
+        None,
+        &[],
+        None,
+    )?;
+    write_log(
+        &mut log_file,
+        LogEntryType::User,
+        Some(&args.prompt),
+        None,
+        &[],
+        None,
+    )?;
 
     // Context tracking.
     let mut cumulative_tokens: u64 = 0;
@@ -211,8 +241,8 @@ fn run_session(args: &Args) -> Result<(), String> {
     let session_start = Instant::now();
     let session_timeout = Duration::from_secs(config.session.timeout_minutes * 60);
     let model_binary = &config.session.model;
-    let session_dir_abs = fs::canonicalize(&args.session_dir)
-        .unwrap_or_else(|_| args.session_dir.clone());
+    let session_dir_abs =
+        fs::canonicalize(&args.session_dir).unwrap_or_else(|_| args.session_dir.clone());
 
     // Set environment variables for tools.
     // SAFETY: phyl-run is single-threaded at this point (before spawning tool threads).
@@ -231,7 +261,14 @@ fn run_session(args: &Args) -> Result<(), String> {
         // 10g: Check cumulative timeout.
         if session_start.elapsed() > session_timeout {
             eprintln!("phyl-run: session timed out after {:?}", session_timeout);
-            write_log(&mut log_file, LogEntryType::Error, Some("Session timed out"), None, &[], None)?;
+            write_log(
+                &mut log_file,
+                LogEntryType::Error,
+                Some("Session timed out"),
+                None,
+                &[],
+                None,
+            )?;
             break;
         }
 
@@ -241,12 +278,16 @@ fn run_session(args: &Args) -> Result<(), String> {
             tools: all_specs.clone(),
         };
 
-        eprintln!("phyl-run: invoking model adapter ({model_binary}), history has {} messages", history.len());
+        eprintln!(
+            "phyl-run: invoking model adapter ({model_binary}), history has {} messages",
+            history.len()
+        );
         let response = invoke_model_with_retry(model_binary, &model_request, MODEL_MAX_RETRIES)?;
 
         // Track token usage.
         if let Some(ref usage) = response.usage {
-            cumulative_tokens = cumulative_tokens.saturating_add(usage.input_tokens + usage.output_tokens);
+            cumulative_tokens =
+                cumulative_tokens.saturating_add(usage.input_tokens + usage.output_tokens);
         } else {
             // Rough estimate: chars / 4.
             let chars: u64 = history.iter().map(|m| m.content.len() as u64).sum();
@@ -266,7 +307,11 @@ fn run_session(args: &Args) -> Result<(), String> {
         write_log(
             &mut log_file,
             LogEntryType::Assistant,
-            if response.content.is_empty() { None } else { Some(&response.content) },
+            if response.content.is_empty() {
+                None
+            } else {
+                Some(&response.content)
+            },
             None,
             &response.tool_calls,
             None,
@@ -277,7 +322,12 @@ fn run_session(args: &Args) -> Result<(), String> {
             eprintln!(
                 "phyl-run: dispatching {} tool call(s): {}",
                 response.tool_calls.len(),
-                response.tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>().join(", ")
+                response
+                    .tool_calls
+                    .iter()
+                    .map(|tc| tc.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
 
             let results = dispatch_tool_calls(
@@ -336,14 +386,23 @@ fn run_session(args: &Args) -> Result<(), String> {
                     tool_calls: vec![],
                     tool_call_id: None,
                 });
-                write_log(&mut log_file, LogEntryType::User, Some(&event), None, &[], None)?;
+                write_log(
+                    &mut log_file,
+                    LogEntryType::User,
+                    Some(&event),
+                    None,
+                    &[],
+                    None,
+                )?;
             }
         }
 
         // Context window management: compress if needed.
         if cumulative_tokens > compress_threshold {
-            eprintln!("phyl-run: context approaching limit ({cumulative_tokens}/{} tokens), compressing",
-                config.model.context_window);
+            eprintln!(
+                "phyl-run: context approaching limit ({cumulative_tokens}/{} tokens), compressing",
+                config.model.context_window
+            );
             history = compress_history(model_binary, &history, &all_specs)?;
             // Reset token estimate after compression.
             let chars: u64 = history.iter().map(|m| m.content.len() as u64).sum();
@@ -364,10 +423,19 @@ fn run_session(args: &Args) -> Result<(), String> {
 
     // Step 12: Write final done entry.
     let summary = final_summary.as_deref().unwrap_or("Session complete");
-    write_log(&mut log_file, LogEntryType::Done, None, Some(summary), &[], None)?;
+    write_log(
+        &mut log_file,
+        LogEntryType::Done,
+        None,
+        Some(summary),
+        &[],
+        None,
+    )?;
 
     // Close FIFO fd.
-    unsafe { libc::close(fifo_fd); }
+    unsafe {
+        libc::close(fifo_fd);
+    }
 
     // Wait for server-mode tool processes to exit.
     for (name, st) in server_tools.iter_mut() {
@@ -386,14 +454,16 @@ fn run_session(args: &Args) -> Result<(), String> {
 fn read_config(home: &Path) -> Result<Config, String> {
     let config_path = home.join("config.toml");
     if !config_path.exists() {
-        eprintln!("phyl-run: config.toml not found at {}, using defaults", config_path.display());
+        eprintln!(
+            "phyl-run: config.toml not found at {}, using defaults",
+            config_path.display()
+        );
         return Ok(Config::default());
     }
 
-    let contents = fs::read_to_string(&config_path)
-        .map_err(|e| format!("failed to read config.toml: {e}"))?;
-    toml::from_str(&contents)
-        .map_err(|e| format!("failed to parse config.toml: {e}"))
+    let contents =
+        fs::read_to_string(&config_path).map_err(|e| format!("failed to read config.toml: {e}"))?;
+    toml::from_str(&contents).map_err(|e| format!("failed to parse config.toml: {e}"))
 }
 
 fn read_file_or_default(path: &Path, default: &str) -> String {
@@ -425,14 +495,11 @@ fn generate_knowledge_summary(knowledge_dir: &Path) -> String {
     // Sort for deterministic, readable output.
     files.sort();
 
-    let mut summary = String::from(
-        "Files in knowledge/ (use read_file to access, search_files to search):\n",
-    );
+    let mut summary =
+        String::from("Files in knowledge/ (use read_file to access, search_files to search):\n");
 
     for file_path in &files {
-        let rel_path = file_path
-            .strip_prefix(knowledge_dir)
-            .unwrap_or(file_path);
+        let rel_path = file_path.strip_prefix(knowledge_dir).unwrap_or(file_path);
 
         // Skip INDEX.md — it's already included separately.
         if rel_path.to_string_lossy() == "INDEX.md" {
@@ -456,10 +523,10 @@ fn collect_knowledge_files(dir: &Path, files: &mut Vec<PathBuf>) {
         let path = entry.path();
 
         // Skip hidden entries.
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with('.')
+        {
+            continue;
         }
 
         if path.is_dir() {
@@ -474,6 +541,7 @@ fn collect_knowledge_files(dir: &Path, files: &mut Vec<PathBuf>) {
 // System prompt assembly
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn build_system_prompt(
     law: &str,
     job: &str,
@@ -601,7 +669,9 @@ fn run_tool_spec(path: &Path) -> Result<Vec<ToolSpec>, String> {
     } else if let Ok(spec) = serde_json::from_str::<ToolSpec>(trimmed) {
         Ok(vec![spec])
     } else {
-        Err(format!("failed to parse --spec output as ToolSpec: {trimmed}"))
+        Err(format!(
+            "failed to parse --spec output as ToolSpec: {trimmed}"
+        ))
     }
 }
 
@@ -621,10 +691,13 @@ fn build_tool_map(discovered: &[DiscoveredTool]) -> HashMap<String, ToolInfo> {
     let mut map = HashMap::new();
     for dt in discovered {
         for spec in &dt.specs {
-            map.insert(spec.name.clone(), ToolInfo {
-                executable: dt.path.clone(),
-                mode: spec.mode.clone(),
-            });
+            map.insert(
+                spec.name.clone(),
+                ToolInfo {
+                    executable: dt.path.clone(),
+                    mode: spec.mode.clone(),
+                },
+            );
         }
     }
     map
@@ -648,7 +721,9 @@ impl ServerTool {
         stdin
             .write_all(json.as_bytes())
             .map_err(|e| format!("write to server tool: {e}"))?;
-        stdin.flush().map_err(|e| format!("flush server tool: {e}"))?;
+        stdin
+            .flush()
+            .map_err(|e| format!("flush server tool: {e}"))?;
         Ok(())
     }
 
@@ -660,8 +735,7 @@ impl ServerTool {
         if line.is_empty() {
             return Err("server tool closed stdout (pipe broken)".into());
         }
-        serde_json::from_str(line.trim())
-            .map_err(|e| format!("parse server response: {e}: {line}"))
+        serde_json::from_str(line.trim()).map_err(|e| format!("parse server response: {e}: {line}"))
     }
 
     fn close_stdin(&mut self) {
@@ -679,7 +753,9 @@ fn start_server_tools(
             continue;
         }
 
-        let exec_name = dt.path.file_name()
+        let exec_name = dt
+            .path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
@@ -695,14 +771,19 @@ fn start_server_tools(
             .map_err(|e| format!("failed to start server tool {exec_name}: {e}"))?;
 
         let stdin = child.stdin.take();
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| format!("no stdout from server tool {exec_name}"))?;
 
-        server_tools.insert(exec_name, ServerTool {
-            child,
-            stdin,
-            stdout_reader: BufReader::new(stdout),
-        });
+        server_tools.insert(
+            exec_name,
+            ServerTool {
+                child,
+                stdin,
+                stdout_reader: BufReader::new(stdout),
+            },
+        );
     }
 
     Ok(server_tools)
@@ -764,7 +845,12 @@ fn dispatch_tool_calls(
         .enumerate()
         .map(|(i, tc)| (tc.id.as_str(), i))
         .collect();
-    results.sort_by_key(|r| order.get(r.tool_call_id.as_str()).copied().unwrap_or(usize::MAX));
+    results.sort_by_key(|r| {
+        order
+            .get(r.tool_call_id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
 
     Ok(results)
 }
@@ -805,11 +891,13 @@ fn dispatch_oneshot_parallel(
 
     handles
         .into_iter()
-        .map(|h| h.join().unwrap_or_else(|_| ToolResult {
-            tool_call_id: String::new(),
-            content: "Error: tool thread panicked".to_string(),
-            end_session: false,
-        }))
+        .map(|h| {
+            h.join().unwrap_or_else(|_| ToolResult {
+                tool_call_id: String::new(),
+                content: "Error: tool thread panicked".to_string(),
+                end_session: false,
+            })
+        })
         .collect()
 }
 
@@ -830,7 +918,11 @@ fn invoke_oneshot_tool(executable: &Path, tc: &ToolCall) -> ToolResult {
         }
     };
 
-    eprintln!("phyl-run: invoking oneshot tool '{}' via {}", tc.name, executable.display());
+    eprintln!(
+        "phyl-run: invoking oneshot tool '{}' via {}",
+        tc.name,
+        executable.display()
+    );
 
     let mut child = match Command::new(executable)
         .stdin(Stdio::piped())
@@ -913,16 +1005,20 @@ fn dispatch_server_call(
     _discovered: &[DiscoveredTool],
     server_tools: &mut HashMap<String, ServerTool>,
 ) -> Result<ToolResult, String> {
-    let info = tool_map.get(&tc.name)
+    let info = tool_map
+        .get(&tc.name)
         .ok_or_else(|| format!("no tool info for '{}'", tc.name))?;
 
     // Find which server tool process handles this.
-    let exec_name = info.executable.file_name()
+    let exec_name = info
+        .executable
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
 
-    let server = server_tools.get_mut(&exec_name)
+    let server = server_tools
+        .get_mut(&exec_name)
         .ok_or_else(|| format!("no server process for '{exec_name}'"))?;
 
     let request = ServerRequest {
@@ -931,7 +1027,10 @@ fn dispatch_server_call(
         arguments: tc.arguments.clone(),
     };
 
-    eprintln!("phyl-run: sending server-mode call '{}' (id: {})", tc.name, tc.id);
+    eprintln!(
+        "phyl-run: sending server-mode call '{}' (id: {})",
+        tc.name, tc.id
+    );
     server.send_request(&request)?;
 
     // Read response.
@@ -965,13 +1064,20 @@ fn invoke_model_with_retry(
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            eprintln!("phyl-run: retrying model invocation (attempt {}/{})", attempt + 1, max_retries + 1);
+            eprintln!(
+                "phyl-run: retrying model invocation (attempt {}/{})",
+                attempt + 1,
+                max_retries + 1
+            );
         }
 
         match invoke_model(model_binary, request) {
             Ok(response) => {
                 // Check if the response itself indicates an error.
-                if response.content.starts_with("Error:") && response.tool_calls.is_empty() && attempt < max_retries {
+                if response.content.starts_with("Error:")
+                    && response.tool_calls.is_empty()
+                    && attempt < max_retries
+                {
                     last_error = response.content.clone();
                     eprintln!("phyl-run: model returned error: {last_error}");
                     continue;
@@ -985,7 +1091,10 @@ fn invoke_model_with_retry(
         }
     }
 
-    Err(format!("model adapter failed after {} attempts: {last_error}", max_retries + 1))
+    Err(format!(
+        "model adapter failed after {} attempts: {last_error}",
+        max_retries + 1
+    ))
 }
 
 fn invoke_model(model_binary: &str, request: &ModelRequest) -> Result<ModelResponse, String> {
@@ -1088,19 +1197,11 @@ fn create_fifo(path: &Path) -> Result<i32, String> {
 
     let ret = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
     if ret != 0 {
-        return Err(format!(
-            "mkfifo failed: {}",
-            io::Error::last_os_error()
-        ));
+        return Err(format!("mkfifo failed: {}", io::Error::last_os_error()));
     }
 
     // Open with O_RDWR | O_NONBLOCK to avoid blocking on open.
-    let fd = unsafe {
-        libc::open(
-            c_path.as_ptr(),
-            libc::O_RDWR | libc::O_NONBLOCK,
-        )
-    };
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK) };
     if fd < 0 {
         return Err(format!(
             "failed to open FIFO: {}",
@@ -1182,8 +1283,8 @@ fn write_log(
         options: vec![],
     };
 
-    let mut json = serde_json::to_string(&entry)
-        .map_err(|e| format!("failed to serialize log entry: {e}"))?;
+    let mut json =
+        serde_json::to_string(&entry).map_err(|e| format!("failed to serialize log entry: {e}"))?;
     json.push('\n');
     file.write_all(json.as_bytes())
         .map_err(|e| format!("failed to write log entry: {e}"))?;
@@ -1202,9 +1303,7 @@ fn compress_history(
     _tools: &[ToolSpec],
 ) -> Result<Vec<Message>, String> {
     // Keep system prompt (first message).
-    let system_msg = history.first()
-        .ok_or("empty history")?
-        .clone();
+    let system_msg = history.first().ok_or("empty history")?.clone();
 
     // Skip system message for compression.
     let rest = &history[1..];
@@ -1346,7 +1445,9 @@ fn finalize_soul(
             // 11j: Truncate if over 3000 words.
             let word_count = new_soul.split_whitespace().count();
             if word_count > SOUL_MAX_WORDS {
-                eprintln!("phyl-run: WARNING: SOUL.md is {word_count} words (limit {SOUL_MAX_WORDS}), truncating");
+                eprintln!(
+                    "phyl-run: WARNING: SOUL.md is {word_count} words (limit {SOUL_MAX_WORDS}), truncating"
+                );
                 new_soul = truncate_soul(&new_soul);
             }
 
@@ -1366,7 +1467,11 @@ fn finalize_soul(
                 .output()
                 .and_then(|_| {
                     Command::new("git")
-                        .args(["commit", "-m", &format!("soul: reflect on session {session_id}")])
+                        .args([
+                            "commit",
+                            "-m",
+                            &format!("soul: reflect on session {session_id}"),
+                        ])
                         .current_dir(home)
                         .output()
                 });
@@ -1375,7 +1480,10 @@ fn finalize_soul(
                 Ok(output) => {
                     if !output.status.success() {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        eprintln!("phyl-run: git commit for SOUL.md returned {}: {stderr}", output.status);
+                        eprintln!(
+                            "phyl-run: git commit for SOUL.md returned {}: {stderr}",
+                            output.status
+                        );
                     } else {
                         eprintln!("phyl-run: SOUL.md updated and committed");
                     }
@@ -1473,7 +1581,9 @@ fn acquire_flock(path: &Path) -> Result<i32, String> {
 
     let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
     if ret != 0 {
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
         return Err(format!(
             "flock failed on {}: {}",
             path.display(),
@@ -1635,7 +1745,10 @@ mod tests {
 
     #[test]
     fn test_truncate_soul() {
-        let long_soul = (0..30).map(|i| format!("Line {i}")).collect::<Vec<_>>().join("\n");
+        let long_soul = (0..30)
+            .map(|i| format!("Line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let truncated = truncate_soul(&long_soul);
         assert!(truncated.contains("Line 0")); // First section kept.
         assert!(truncated.contains("Line 29")); // Last section kept.

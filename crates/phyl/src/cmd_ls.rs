@@ -1,7 +1,7 @@
 //! `phyl ls` — list sessions.
 
-use anyhow::{bail, Context};
 use crate::client;
+use anyhow::{Context, bail};
 use phyl_core::SessionInfo;
 
 pub async fn run() -> anyhow::Result<()> {
@@ -12,8 +12,7 @@ pub async fn run() -> anyhow::Result<()> {
         bail!("HTTP {}: {}", status.as_u16(), body);
     }
 
-    let sessions: Vec<SessionInfo> =
-        serde_json::from_str(&body).context("bad response")?;
+    let sessions: Vec<SessionInfo> = serde_json::from_str(&body).context("bad response")?;
 
     if sessions.is_empty() {
         println!("No sessions.");
@@ -21,10 +20,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     // Print header.
-    println!(
-        "{:<38} {:<10} {:<20} {}",
-        "ID", "STATUS", "CREATED", "SUMMARY"
-    );
+    println!("{:<38} {:<10} {:<20} SUMMARY", "ID", "STATUS", "CREATED");
     println!("{}", "-".repeat(90));
 
     for s in &sessions {
@@ -37,7 +33,10 @@ pub async fn run() -> anyhow::Result<()> {
             .chars()
             .take(40)
             .collect::<String>();
-        println!("{:<38} {:<10} {:<20} {}", s.id, status_str, created, summary);
+        println!(
+            "{:<38} {:<10} {:<20} {}",
+            s.id, status_str, created, summary
+        );
     }
 
     Ok(())
