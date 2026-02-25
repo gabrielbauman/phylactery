@@ -37,6 +37,8 @@ Tools are discovered from `$PATH`. Anything named `phyl-tool-*` that responds to
 
 ```
 You ──► phyl (CLI) ──► phylactd (daemon) ──► phyl-run (session) ──► model adapter
+                            │                      │                    ├── phyl-model-claude
+                            │                      │                    └── phyl-model-openai
                             │                      │
                             │                      ├──► phyl-tool-bash
                             │                      ├──► phyl-tool-files
@@ -48,7 +50,7 @@ You ──► phyl (CLI) ──► phylactd (daemon) ──► phyl-run (session
                             └──► phyl-bridge-signal (Signal Messenger)
 ```
 
-Twelve crates. One library, eleven binaries. Each is small enough to read in one sitting.
+Thirteen crates. One library, twelve binaries. Each is small enough to read in one sitting.
 
 See [docs/](docs/README.md) for the full documentation.
 
@@ -87,7 +89,7 @@ $EDITOR ~/.local/share/phylactery/LAW.md    # Your rules
 $EDITOR ~/.local/share/phylactery/JOB.md    # Its role
 ```
 
-The default model adapter uses the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli). Make sure `claude` is on your `$PATH`, or set `PHYL_CLAUDE_CLI` to point to it.
+The default model adapter uses the [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli). Make sure `claude` is on your `$PATH`, or set `PHYL_CLAUDE_CLI` to point to it. Alternatively, use `phyl-model-openai` to run with any OpenAI-compatible API (Ollama, llama.cpp, vLLM, LM Studio) — set `model_adapter = "phyl-model-openai"` in `config.toml` and configure via `PHYL_OPENAI_URL` and `PHYL_OPENAI_MODEL` environment variables.
 
 ### Run
 
@@ -157,7 +159,7 @@ Full documentation lives in [docs/](docs/README.md), with a page for every compo
 
 **Core**: [phyl](docs/phyl.md) -- [phylactd](docs/phylactd.md) -- [phyl-run](docs/phyl-run.md) -- [phyl-core](docs/phyl-core.md)
 
-**Model Adapters**: [phyl-model-claude](docs/phyl-model-claude.md)
+**Model Adapters**: [phyl-model-claude](docs/phyl-model-claude.md) -- [phyl-model-openai](docs/phyl-model-openai.md)
 
 **Tools**: [bash](docs/phyl-tool-bash.md) -- [files](docs/phyl-tool-files.md) -- [session](docs/phyl-tool-session.md) -- [mcp](docs/phyl-tool-mcp.md)
 
@@ -182,7 +184,7 @@ Phylactery runs on your machine with your privileges. A few things to be aware o
 
 - Rust (edition 2024) for building
 - Linux or macOS (file watching uses inotify on Linux and FSEvents on macOS via the `notify` crate)
-- [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) for the default model adapter (or write your own)
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) for the default model adapter, or any OpenAI-compatible API server for `phyl-model-openai`
 - [signal-cli](https://github.com/AsamK/signal-cli) if using the Signal bridge
 
 ## License
