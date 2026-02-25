@@ -314,7 +314,7 @@ async fn process_sse_message(msg: &str, cfg: &SignalBridgeConfig, state: &Shared
 
             // Track the pending question.
             {
-                let mut pending = state.lock().unwrap();
+                let mut pending = state.lock().unwrap_or_else(|e| e.into_inner());
                 pending.push_back(PendingQuestion {
                     session_id: session_id.clone(),
                     question_id: qid.clone(),
@@ -400,7 +400,7 @@ async fn process_inbound(
 
     // Check if there's a pending question to answer.
     let pending = {
-        let mut queue = state.lock().unwrap();
+        let mut queue = state.lock().unwrap_or_else(|e| e.into_inner());
         queue.pop_front()
     };
 

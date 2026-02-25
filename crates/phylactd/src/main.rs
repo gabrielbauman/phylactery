@@ -230,7 +230,7 @@ fn read_config(home: &std::path::Path) -> Config {
 /// Re-adopt running processes, mark dead ones as crashed.
 fn recover_sessions(state: &AppState) {
     let home = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.home.clone()
     };
     let sessions_dir = home.join("sessions");
@@ -312,7 +312,7 @@ fn recover_sessions(state: &AppState) {
             summary,
         };
 
-        state.lock().unwrap().sessions.insert(session_id, tracked);
+        state.lock().unwrap_or_else(|e| e.into_inner()).sessions.insert(session_id, tracked);
     }
 }
 
@@ -330,7 +330,7 @@ async fn reaper_loop(state: AppState) {
 
 /// Check all running sessions; update status for finished processes.
 fn reap_sessions(state: &AppState) {
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
     let ids: Vec<Uuid> = s
         .sessions
         .iter()
@@ -394,7 +394,7 @@ fn reap_sessions(state: &AppState) {
 
 /// GET /health
 async fn handle_health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let active = s
         .sessions
         .values()
@@ -413,7 +413,7 @@ async fn handle_create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<CreateSessionResponse>), (StatusCode, String)> {
     let (home, config, running_count) = {
-        let s = state.lock().unwrap();
+        let s = state.lock().unwrap_or_else(|e| e.into_inner());
         let running = s
             .sessions
             .values()
@@ -469,7 +469,7 @@ async fn handle_create_session(
         summary: None,
     };
 
-    state.lock().unwrap().sessions.insert(session_id, tracked);
+    state.lock().unwrap_or_else(|e| e.into_inner()).sessions.insert(session_id, tracked);
 
     eprintln!("phylactd: started session {session_id} (pid {pid})");
 
@@ -484,7 +484,7 @@ async fn handle_create_session(
 
 /// GET /sessions — list all sessions.
 async fn handle_list_sessions(State(state): State<AppState>) -> Json<Vec<SessionInfo>> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let mut sessions: Vec<SessionInfo> = s
         .sessions
         .values()
@@ -505,7 +505,7 @@ async fn handle_get_session(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<SessionDetail>, (StatusCode, String)> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let tracked = s
         .sessions
         .get(&id)
@@ -534,7 +534,7 @@ async fn handle_delete_session(
 ) -> Result<StatusCode, (StatusCode, String)> {
     // First pass: validate and send SIGTERM/kill, then drop the lock.
     let needs_sigkill = {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         let tracked = s
             .sessions
             .get_mut(&id)
@@ -573,7 +573,7 @@ async fn handle_delete_session(
 
     // Second pass: update status.
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(tracked) = s.sessions.get_mut(&id) {
             tracked.status = SessionStatus::Done;
             tracked.summary = Some("Killed by user".to_string());
@@ -591,7 +591,7 @@ async fn handle_inject_event(
     Path(id): Path<Uuid>,
     Json(req): Json<InjectEventRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let s = state.lock().unwrap();
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
     let tracked = s
         .sessions
         .get(&id)
@@ -635,7 +635,7 @@ async fn handle_feed(
 
         loop {
             let sessions: Vec<(Uuid, PathBuf, SessionStatus)> = {
-                let s = state.lock().unwrap();
+                let s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.sessions
                     .values()
                     .map(|t| (t.id, t.session_dir.clone(), t.status.clone()))

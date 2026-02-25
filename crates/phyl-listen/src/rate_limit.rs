@@ -21,7 +21,7 @@ impl RateLimiter {
     /// Check if a request from `source` with `max_per_minute` is allowed.
     /// Returns true if allowed, false if rate limited.
     pub fn check(&self, source: &str, max_per_minute: u32) -> bool {
-        let mut limits = self.limits.lock().unwrap();
+        let mut limits = self.limits.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let cutoff = now - self.window;
 
@@ -55,7 +55,7 @@ impl DedupCache {
 
     /// Returns true if this is a duplicate (already seen within TTL).
     pub fn is_duplicate(&self, id: &str) -> bool {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let cutoff = now - self.ttl;
 
