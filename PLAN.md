@@ -590,7 +590,18 @@ shell = true                        # run via sh -c instead of exec
 command = "notmuch search --output=summary tag:inbox AND tag:unread | head -20"
 interval = 120
 prompt = "New unread mail arrived. Summarize the new messages."
+
+[[poll]]
+name = "slack-mentions"
+command = "phyl-tool-mcp"
+args = ["--call", "slack", "get_mentions", "{}"]
+interval = 180
+prompt = "New Slack mentions. Summarize and flag anything that needs a reply."
 ```
+
+The last example shows `phyl-poll` composing with `phyl-tool-mcp --call` to
+poll an MCP server. Any MCP server configured in `config.toml` becomes a
+pollable data source — no wrapper scripts needed.
 
 **How it works:**
 
@@ -1045,9 +1056,14 @@ The agentic loop, testable without a daemon.
 
 - [ ] Implement `phyl-tool-mcp`:
       - On `--spec`: start configured MCP servers, list their tools, aggregate
-      - On invocation: route tool call to the correct MCP server
+      - On `--serve`: run NDJSON server loop, route tool calls to correct MCP
+        server
+      - On `--call <server> <tool> <args>`: one-shot mode — start one MCP
+        server, make one tool call, print result to stdout, shut down. Reuses
+        the same MCP client logic as `--serve`.
       - JSON-RPC over stdio to MCP servers
 - [ ] Test: configure an MCP server, invoke a tool through the bridge
+- [ ] Test: `phyl-tool-mcp --call <server> <tool> '<json>'` from command line
 
 ### Phase 8: Knowledge Base + Git
 
@@ -1296,6 +1312,38 @@ MCP servers are long-lived stateful processes.
 in `--serve` mode for the life of the session. It manages MCP server child
 processes internally — starting them on first use and stopping them when stdin
 closes. See the Tool Protocol section for the NDJSON server mode contract.
+
+**One-shot CLI mode (`--call`):** `phyl-tool-mcp` also supports a one-shot
+invocation mode for use outside of sessions — from scripts, cron, or
+`phyl-poll`:
+
+```sh
+$ phyl-tool-mcp --call <server> <tool> '<arguments json>'
+```
+
+This starts the named MCP server, performs the initialize handshake, calls
+the specified tool, prints the result to stdout, and shuts down. Example:
+
+```sh
+$ phyl-tool-mcp --call brave-search brave_search '{"query":"rust async"}'
+{"output":"...search results..."}
+```
+
+This reuses all the existing MCP client logic — config parsing, server
+startup, JSON-RPC protocol, content extraction. No duplication. The mode is
+a thin wrapper: start one server, make one call, print, exit.
+
+This makes MCP tools composable from the shell. Any MCP server configured in
+`config.toml` becomes a CLI tool. It also composes naturally with `phyl-poll`:
+
+```toml
+[[poll]]
+name = "email-check"
+command = "phyl-tool-mcp"
+args = ["--call", "email-server", "check_inbox", "{}"]
+interval = 120
+prompt = "New email arrived. Summarize the new messages."
+```
 
 ### FIFO Handling
 
