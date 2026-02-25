@@ -20,6 +20,7 @@ Detailed documentation for every component in the Phylactery system.
 ### Model Adapters
 
 - [phyl-model-claude](phyl-model-claude.md) -- Model adapter for the Claude CLI
+- [phyl-model-openai](phyl-model-openai.md) -- Model adapter for OpenAI-compatible APIs (Ollama, llama.cpp, vLLM, LM Studio, etc.)
 
 ### Tools
 

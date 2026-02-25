@@ -6,6 +6,7 @@ members = [
     "crates/phyl",
     "crates/phyl-run",
     "crates/phyl-model-claude",
+    "crates/phyl-model-openai",
     "crates/phyl-tool-bash",
     "crates/phyl-tool-files",
     "crates/phyl-tool-session",
