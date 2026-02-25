@@ -25,7 +25,7 @@ A personal AI agent built as cooperating Unix processes. Read `PLAN.md` for the 
 10 crates in a Cargo workspace under `crates/`. One shared library, nine binaries:
 
 - **phyl-core** — Shared types library. All protocol types live here. Every other crate depends on it.
-- **phyl** — CLI client. Currently only `phyl init` is implemented. Future subcommands talk to the daemon over a Unix socket.
+- **phyl** — CLI client. Subcommands: `init`, `start [-d]`, `session [-d] "prompt"`, `ls`, `status <id>`, `say <id> "msg"`, `log <id>`, `stop <id>`, `watch`. Talks to the daemon over a Unix socket using hyper HTTP/1.1 client.
 - **phylactd** — Daemon. Manages sessions and serves a REST API on a Unix socket (`axum` + `tokio`). Spawns `phyl-run` per session, tracks processes, reaps finished sessions. API: `GET /health`, `POST /sessions`, `GET /sessions`, `GET /sessions/:id`, `DELETE /sessions/:id`, `POST /sessions/:id/events`, `GET /feed` (SSE).
 - **phyl-run** — Session runner. The agentic loop: discover tools, invoke model adapter, dispatch tool calls (oneshot in parallel, server-mode via NDJSON), manage FIFO events, write `log.jsonl`, finalize SOUL.md with reflection. Invoked as `phyl-run --session-dir <path> --prompt <text>`.
 - **phyl-model-claude** — Model adapter. Translates between phylactery's JSON format and the `claude` CLI. Reads `ModelRequest` from stdin, writes `ModelResponse` to stdout.
@@ -46,7 +46,7 @@ All inter-process communication is JSON on stdin/stdout. The types in `phyl-core
 
 ## Conventions
 
-- Rust edition 2024. Common dependencies (`serde`, `serde_json`, `chrono`, `uuid`, `toml`, `libc`, `tokio`, `axum`, `hyper`, `hyper-util`, `tower`) are declared as workspace dependencies in the root `Cargo.toml`.
+- Rust edition 2024. Common dependencies (`serde`, `serde_json`, `chrono`, `uuid`, `toml`, `libc`, `tokio`, `axum`, `hyper`, `hyper-util`, `http-body-util`, `bytes`, `tower`) are declared as workspace dependencies in the root `Cargo.toml`.
 - All serializable types derive `Serialize`/`Deserialize`. Enums use `#[serde(rename_all = "snake_case")]`. Optional fields use `skip_serializing_if`.
 - Errors are returned as `Result<(), String>` in the current simple code. This will likely evolve to proper error types.
 - Binaries log to stderr. Session conversation logs go to `log.jsonl` files.
