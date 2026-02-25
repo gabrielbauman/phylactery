@@ -52,8 +52,7 @@ struct AdapterConfig {
 fn load_config() -> AdapterConfig {
     let base_url = std::env::var("PHYL_OPENAI_URL")
         .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
-    let model =
-        std::env::var("PHYL_OPENAI_MODEL").unwrap_or_else(|_| "gemma3n".to_string());
+    let model = std::env::var("PHYL_OPENAI_MODEL").unwrap_or_else(|_| "gemma3n".to_string());
     let api_key = std::env::var("PHYL_OPENAI_API_KEY").unwrap_or_default();
     let native_tools = std::env::var("PHYL_OPENAI_TOOL_MODE")
         .map(|v| v == "native")
@@ -555,11 +554,7 @@ fn extract_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        &s[..max]
-    }
+    if s.len() <= max { s } else { &s[..max] }
 }
 
 // ---------------------------------------------------------------------------
@@ -684,12 +679,20 @@ mod tests {
 
         // Tool result becomes a user message.
         assert_eq!(messages[2].role, "user");
-        assert!(messages[2].content.as_deref().unwrap().contains("file1.txt"));
-        assert!(messages[2]
-            .content
-            .as_deref()
-            .unwrap()
-            .contains("Tool result"));
+        assert!(
+            messages[2]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("file1.txt")
+        );
+        assert!(
+            messages[2]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("Tool result")
+        );
     }
 
     // -- build_native_messages --

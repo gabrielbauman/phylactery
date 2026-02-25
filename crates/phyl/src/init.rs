@@ -199,6 +199,7 @@ fn write_secrets_env(home: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn create_xdg_symlink(home: &Path) {
     // Only create symlink if we're using XDG paths
     let home_str = home.to_string_lossy();

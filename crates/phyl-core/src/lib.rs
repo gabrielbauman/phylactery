@@ -547,10 +547,7 @@ fn platform_data_dir() -> Option<std::path::PathBuf> {
 
     #[cfg(target_os = "macos")]
     {
-        Some(
-            std::path::PathBuf::from(&home)
-                .join("Library/Application Support/phylactery"),
-        )
+        Some(std::path::PathBuf::from(&home).join("Library/Application Support/phylactery"))
     }
 
     #[cfg(not(target_os = "macos"))]

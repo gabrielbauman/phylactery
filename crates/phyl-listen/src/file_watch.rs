@@ -52,9 +52,7 @@ pub async fn run_file_watches(
 
         match watcher.watch(path, mode) {
             Ok(()) => {
-                let canonical = path
-                    .canonicalize()
-                    .unwrap_or_else(|_| path.to_path_buf());
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
                 path_config.insert(canonical, i);
                 eprintln!(
                     "phyl-listen: [{}] watching {}",
