@@ -156,6 +156,7 @@ async fn connect_and_stream(
     let mut current_id: Option<String> = None;
     let mut last_id: Option<String> = None;
     let mut buffer = String::new();
+    const MAX_BUFFER_SIZE: usize = 1_048_576; // 1 MB maximum buffer
 
     let stale_timeout = Duration::from_secs(300);
     let mut last_activity = tokio::time::Instant::now();
@@ -168,6 +169,18 @@ async fn connect_and_stream(
                         if let Ok(data) = frame.into_data() {
                             last_activity = tokio::time::Instant::now();
                             buffer.push_str(&String::from_utf8_lossy(&data));
+
+                            // Guard against unbounded buffer growth from a
+                            // misbehaving server sending data without newlines.
+                            if buffer.len() > MAX_BUFFER_SIZE {
+                                eprintln!("phyl-listen: [{}] SSE buffer exceeded {} bytes, resetting",
+                                    config.name, MAX_BUFFER_SIZE);
+                                buffer.clear();
+                                current_event_type.clear();
+                                current_data.clear();
+                                current_id = None;
+                                continue;
+                            }
 
                             while let Some(newline_pos) = buffer.find('\n') {
                                 let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
