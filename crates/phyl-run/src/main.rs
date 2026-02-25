@@ -140,11 +140,12 @@ fn run_session(args: &Args) -> Result<(), String> {
     // Step 3: Read config.toml.
     let config = read_config(&home)?;
 
-    // Step 4: Read LAW.md, JOB.md, SOUL.md, knowledge/INDEX.md.
+    // Step 4: Read LAW.md, JOB.md, SOUL.md, knowledge/INDEX.md + knowledge summary.
     let law = read_file_or_default(&home.join("LAW.md"), "");
     let job = read_file_or_default(&home.join("JOB.md"), "");
     let soul = read_file_or_default(&home.join("SOUL.md"), "I am new.");
     let index = read_file_or_default(&home.join("knowledge/INDEX.md"), "");
+    let knowledge_summary = generate_knowledge_summary(&home.join("knowledge"));
 
     // Step 6: Discover tools from $PATH.
     let discovered = discover_tools();
@@ -158,7 +159,7 @@ fn run_session(args: &Args) -> Result<(), String> {
     let tool_names: Vec<String> = all_specs.iter().map(|s| s.name.clone()).collect();
 
     // Step 5: Assemble system prompt.
-    let system_prompt = build_system_prompt(&law, &job, &soul, &index, &session_id, &args.session_dir, &tool_names);
+    let system_prompt = build_system_prompt(&law, &job, &soul, &index, &knowledge_summary, &session_id, &args.session_dir, &tool_names);
 
     // Step 7: Start server-mode tools.
     let mut server_tools = start_server_tools(&discovered)?;
@@ -406,6 +407,76 @@ fn read_file_or_default(path: &Path, default: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Knowledge base summary generation
+// ---------------------------------------------------------------------------
+
+/// Generate a structured file tree of the knowledge base for inclusion in the
+/// system prompt.
+///
+/// Lists files and directories under `knowledge/` in a compact tree format.
+/// The agent can use `read_file` to fetch specific files on demand — no file
+/// content is included here, keeping context window usage minimal.
+fn generate_knowledge_summary(knowledge_dir: &Path) -> String {
+    if !knowledge_dir.is_dir() {
+        return String::new();
+    }
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_knowledge_files(knowledge_dir, &mut files);
+
+    if files.is_empty() {
+        return String::new();
+    }
+
+    // Sort for deterministic, readable output.
+    files.sort();
+
+    let mut summary = String::from(
+        "Files in knowledge/ (use read_file to access, search_files to search):\n",
+    );
+
+    for file_path in &files {
+        let rel_path = file_path
+            .strip_prefix(knowledge_dir)
+            .unwrap_or(file_path);
+
+        // Skip INDEX.md — it's already included separately.
+        if rel_path.to_string_lossy() == "INDEX.md" {
+            continue;
+        }
+
+        summary.push_str(&format!("  {}\n", rel_path.display()));
+    }
+
+    summary
+}
+
+/// Recursively collect all files under a directory, skipping hidden files/dirs.
+fn collect_knowledge_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Skip hidden entries.
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with('.') {
+                continue;
+            }
+        }
+
+        if path.is_dir() {
+            collect_knowledge_files(&path, files);
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // System prompt assembly
 // ---------------------------------------------------------------------------
 
@@ -414,6 +485,7 @@ fn build_system_prompt(
     job: &str,
     soul: &str,
     index: &str,
+    knowledge_summary: &str,
     session_id: &str,
     session_dir: &Path,
     tool_names: &[String],
@@ -425,6 +497,15 @@ fn build_system_prompt(
         tool_names.join(", ")
     };
 
+    let knowledge_section = if knowledge_summary.is_empty() {
+        format!("=== KNOWLEDGE INDEX ===\n{index}")
+    } else {
+        format!(
+            "=== KNOWLEDGE INDEX ===\n{index}\n\n\
+             === KNOWLEDGE SUMMARY ===\n{knowledge_summary}"
+        )
+    };
+
     format!(
         "=== LAW ===\n\
          {law}\n\n\
@@ -432,8 +513,7 @@ fn build_system_prompt(
          {job}\n\n\
          === SOUL ===\n\
          {soul}\n\n\
-         === KNOWLEDGE INDEX ===\n\
-         {index}\n\n\
+         {knowledge_section}\n\n\
          === SESSION ===\n\
          Session ID: {session_id}\n\
          Working directory: {scratch}\n\
@@ -1459,6 +1539,7 @@ mod tests {
             "You are a helper.",
             "I am new.",
             "No entries yet.",
+            "",
             "test-123",
             Path::new("/tmp/sessions/test-123"),
             &["bash".to_string(), "read_file".to_string()],
@@ -1483,11 +1564,46 @@ mod tests {
             "job",
             "soul",
             "index",
+            "",
             "s1",
             Path::new("/tmp/s1"),
             &[],
         );
         assert!(prompt.contains("tools: none"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_knowledge_summary() {
+        let prompt = build_system_prompt(
+            "law",
+            "job",
+            "soul",
+            "index",
+            "Files in knowledge/ (use read_file to access):\n  contacts/alice.md\n  projects/rust.md\n",
+            "s1",
+            Path::new("/tmp/s1"),
+            &["bash".to_string()],
+        );
+        assert!(prompt.contains("=== KNOWLEDGE SUMMARY ==="));
+        assert!(prompt.contains("contacts/alice.md"));
+        assert!(prompt.contains("projects/rust.md"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_empty_knowledge_summary() {
+        let prompt = build_system_prompt(
+            "law",
+            "job",
+            "soul",
+            "index",
+            "",
+            "s1",
+            Path::new("/tmp/s1"),
+            &["bash".to_string()],
+        );
+        // When knowledge summary is empty, no KNOWLEDGE SUMMARY section.
+        assert!(!prompt.contains("=== KNOWLEDGE SUMMARY ==="));
+        assert!(prompt.contains("=== KNOWLEDGE INDEX ==="));
     }
 
     #[test]
@@ -1549,5 +1665,75 @@ mod tests {
     fn test_read_file_or_default() {
         let result = read_file_or_default(Path::new("/nonexistent/path/file.md"), "default value");
         assert_eq!(result, "default value");
+    }
+
+    #[test]
+    fn test_generate_knowledge_summary_nonexistent() {
+        let summary = generate_knowledge_summary(Path::new("/nonexistent/knowledge"));
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_generate_knowledge_summary_with_files() {
+        let tmp = std::env::temp_dir().join("phyl_test_kb_summary");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("contacts")).unwrap();
+        fs::create_dir_all(tmp.join("projects")).unwrap();
+        fs::write(tmp.join("INDEX.md"), "# Knowledge Index\n").unwrap();
+        fs::write(tmp.join("contacts/alice.md"), "Alice is a friend.\n").unwrap();
+        fs::write(tmp.join("projects/rust.md"), "Learning Rust.\n").unwrap();
+
+        let summary = generate_knowledge_summary(&tmp);
+        assert!(summary.contains("contacts/alice.md"));
+        assert!(summary.contains("projects/rust.md"));
+        // INDEX.md should be excluded from the file list (it's included separately).
+        assert!(!summary.contains("  INDEX.md"));
+        // File contents should NOT be included — just the file tree.
+        assert!(!summary.contains("Alice is a friend."));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_generate_knowledge_summary_empty_dir() {
+        let tmp = std::env::temp_dir().join("phyl_test_kb_empty");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let summary = generate_knowledge_summary(&tmp);
+        assert!(summary.is_empty());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_generate_knowledge_summary_skips_hidden() {
+        let tmp = std::env::temp_dir().join("phyl_test_kb_hidden");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join(".hidden_file"), "secret").unwrap();
+        fs::write(tmp.join("visible.md"), "visible content").unwrap();
+
+        let summary = generate_knowledge_summary(&tmp);
+        assert!(!summary.contains("hidden_file"));
+        assert!(summary.contains("visible.md"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_collect_knowledge_files_recursive() {
+        let tmp = std::env::temp_dir().join("phyl_test_kb_recurse");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("a/b")).unwrap();
+        fs::write(tmp.join("top.md"), "top").unwrap();
+        fs::write(tmp.join("a/mid.md"), "mid").unwrap();
+        fs::write(tmp.join("a/b/deep.md"), "deep").unwrap();
+
+        let mut files = Vec::new();
+        collect_knowledge_files(&tmp, &mut files);
+        assert_eq!(files.len(), 3);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
