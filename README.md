@@ -56,23 +56,37 @@ See [docs/](docs/README.md) for the full documentation.
 
 ## Quick Start
 
-### Build
+### Install
+
+The install script builds from source, copies all 12 binaries to `~/.local/bin`, and runs `phyl init`:
 
 ```sh
 git clone https://github.com/gabrielbauman/phylactery.git
 cd phylactery
+./install.sh
+```
+
+Re-running `./install.sh` is safe — it rebuilds incrementally, overwrites binaries, and skips init if the agent home already exists.
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--install-dir <path>` | Install binaries somewhere other than `~/.local/bin` |
+| `--skip-init` | Build and install only, don't run `phyl init` |
+
+<details>
+<summary>Manual build (without install script)</summary>
+
+```sh
 cargo build --release
 ```
 
-Binaries land in `target/release/`. Put them on your `$PATH`.
+Binaries land in `target/release/`. Put them on your `$PATH`, then run `phyl init`.
 
-### Initialize
+</details>
 
-```sh
-phyl init
-```
-
-This creates the agent's home at `~/.local/share/phylactery/` (Linux) or `~/Library/Application Support/phylactery/` (macOS) with:
+`phyl init` creates the agent's home at `~/.local/share/phylactery/` (Linux) or `~/Library/Application Support/phylactery/` (macOS) with:
 - `config.toml` -- configuration with sensible defaults
 - `secrets.env` -- secret storage (mode 600, gitignored)
 - `LAW.md`, `JOB.md` -- edit these to define your agent's rules and role
