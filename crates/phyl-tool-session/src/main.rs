@@ -7,9 +7,12 @@ fn tool_specs() -> Vec<ToolSpec> {
         ToolSpec {
             name: "ask_human".to_string(),
             description: "Ask the human operator a question and wait for their response. \
-                         Use this when you need human input, approval, or clarification. \
-                         The question will be delivered to the human via whatever bridge \
-                         they have configured (terminal, Signal, etc)."
+                         Use this when you need human input, approval, clarification, or \
+                         have follow-up questions after completing work. If you finished a \
+                         task but want to ask about next steps, preferences, or anything \
+                         else, use this tool — do NOT call done. The question will be \
+                         delivered to the human via whatever bridge they have configured \
+                         (terminal, Signal, etc)."
                 .to_string(),
             mode: ToolMode::Server,
             parameters: serde_json::json!({
@@ -35,8 +38,10 @@ fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "done".to_string(),
-            description: "End the current session. Call this when you have completed \
-                         the task or there is nothing more to do. Provide a brief \
+            description: "End the current session. Call this ONLY when the task is fully \
+                         complete and you have no remaining questions or follow-ups for \
+                         the human. If you have questions, need clarification, or want \
+                         to suggest next steps, use ask_human instead. Provide a brief \
                          summary of what was accomplished."
                 .to_string(),
             mode: ToolMode::Server,
