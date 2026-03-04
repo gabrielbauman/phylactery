@@ -59,7 +59,7 @@ Phylactery uses a deliberate two-repo model:
 
 ## Process Architecture
 
-There is no monolith. Instead, there are 13 crates that build into one library and twelve binaries:
+There is no monolith. Instead, there are 14 crates that build into one library and thirteen binaries:
 
 | Binary | Role |
 |--------|------|
@@ -68,6 +68,7 @@ There is no monolith. Instead, there are 13 crates that build into one library a
 | `phyl-run` | Session runner. The agentic loop. One per session. |
 | `phyl-model-claude` | Model adapter for the Claude CLI. |
 | `phyl-model-openai` | Model adapter for OpenAI-compatible APIs (Ollama, llama.cpp, vLLM, etc.). |
+| `phyl-model-anthropic` | Model adapter for the native Anthropic Messages API. |
 | `phyl-tool-bash` | Tool: execute shell commands. |
 | `phyl-tool-files` | Tool: read/write/search files. |
 | `phyl-tool-session` | Tool (server mode): human interaction + session control. |

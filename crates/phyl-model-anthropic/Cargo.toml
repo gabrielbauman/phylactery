@@ -1,0 +1,11 @@
+[package]
+name = "phyl-model-anthropic"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+phyl-core = { path = "../phyl-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { version = "2", features = ["json"] }
