@@ -1,0 +1,605 @@
+use phyl_core::{SandboxSpec, ToolInput, ToolMode, ToolOutput, ToolSpec};
+use std::io::{self, Read, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+
+/// Default fetch timeout in seconds.
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+#[derive(Debug)]
+enum Browser {
+    Chrome(PathBuf),
+    Firefox(PathBuf),
+}
+
+fn tool_spec() -> ToolSpec {
+    ToolSpec {
+        name: "web_fetch".to_string(),
+        description: "Fetch a web page with full JavaScript rendering using a headless browser \
+                       and return the rendered HTML. Requires Chrome, Chromium, or Firefox \
+                       installed on the system."
+            .to_string(),
+        mode: ToolMode::Oneshot,
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch (must be http:// or https://)"
+                }
+            },
+            "required": ["url"]
+        }),
+        sandbox: Some(SandboxSpec {
+            paths_rw: vec!["/tmp".to_string()],
+            paths_ro: vec![
+                "/usr".to_string(),
+                "/lib".to_string(),
+                "/bin".to_string(),
+                "/etc".to_string(),
+                "/Applications".to_string(),
+            ],
+            net: true,
+            max_cpu_seconds: Some(60),
+            max_file_bytes: Some(104_857_600),
+            max_procs: Some(64),
+            max_fds: Some(256),
+        }),
+    }
+}
+
+/// Check if an executable exists on PATH via `which`, or at an absolute path.
+fn find_executable(name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        if path.exists() {
+            return Some(path.to_path_buf());
+        }
+        return None;
+    }
+    // Use `which` to search PATH.
+    Command::new("which")
+        .arg(name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+}
+
+/// Detect the first available browser.
+fn detect_browser() -> Option<Browser> {
+    // Chrome / Chromium on PATH
+    for name in [
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium-browser",
+        "chromium",
+    ] {
+        if let Some(path) = find_executable(name) {
+            return Some(Browser::Chrome(path));
+        }
+    }
+
+    // Firefox on PATH
+    if let Some(path) = find_executable("firefox") {
+        return Some(Browser::Firefox(path));
+    }
+
+    // macOS application bundles
+    let chrome_app = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if let Some(path) = find_executable(chrome_app) {
+        return Some(Browser::Chrome(path));
+    }
+
+    let chromium_app = "/Applications/Chromium.app/Contents/MacOS/Chromium";
+    if let Some(path) = find_executable(chromium_app) {
+        return Some(Browser::Chrome(path));
+    }
+
+    let firefox_app = "/Applications/Firefox.app/Contents/MacOS/firefox";
+    if let Some(path) = find_executable(firefox_app) {
+        return Some(Browser::Firefox(path));
+    }
+
+    None
+}
+
+/// Fetch a URL using headless Chrome/Chromium with --dump-dom.
+fn fetch_with_chromium(browser_path: &Path, url: &str, timeout: Duration) -> ToolOutput {
+    let user_data_dir = format!("/tmp/phyl-chrome-{}", std::process::id());
+
+    let child = match Command::new(browser_path)
+        .args([
+            "--headless",
+            "--dump-dom",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-software-rasterizer",
+            "--disable-dev-shm-usage",
+            &format!("--user-data-dir={user_data_dir}"),
+            url,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            return ToolOutput {
+                output: None,
+                error: Some(format!("Failed to spawn browser: {e}")),
+            };
+        }
+    };
+
+    let result = match wait_with_timeout(child, timeout) {
+        Ok((_status, stdout, _stderr)) => {
+            if stdout.is_empty() {
+                ToolOutput {
+                    output: None,
+                    error: Some("Browser returned empty output".to_string()),
+                }
+            } else {
+                ToolOutput {
+                    output: Some(stdout),
+                    error: None,
+                }
+            }
+        }
+        Err(e) => ToolOutput {
+            output: None,
+            error: Some(e),
+        },
+    };
+
+    // Clean up user data dir.
+    let _ = std::fs::remove_dir_all(&user_data_dir);
+
+    result
+}
+
+/// Read a Marionette length-prefixed JSON message from a TCP stream.
+fn marionette_recv(stream: &mut std::net::TcpStream) -> Result<serde_json::Value, String> {
+    // Read length prefix terminated by ':'
+    let mut len_buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match io::Read::read(stream, &mut byte) {
+            Ok(0) => return Err("Connection closed while reading length prefix".to_string()),
+            Ok(_) => {
+                if byte[0] == b':' {
+                    break;
+                }
+                len_buf.push(byte[0]);
+            }
+            Err(e) => return Err(format!("Failed to read from Marionette: {e}")),
+        }
+    }
+    let len_str = String::from_utf8(len_buf).map_err(|e| format!("Invalid length prefix: {e}"))?;
+    let len: usize = len_str
+        .parse()
+        .map_err(|e| format!("Invalid length value '{len_str}': {e}"))?;
+
+    // Read exactly `len` bytes of JSON.
+    let mut json_buf = vec![0u8; len];
+    let mut read = 0;
+    while read < len {
+        match io::Read::read(stream, &mut json_buf[read..]) {
+            Ok(0) => return Err("Connection closed while reading message body".to_string()),
+            Ok(n) => read += n,
+            Err(e) => return Err(format!("Failed to read message body: {e}")),
+        }
+    }
+
+    serde_json::from_slice(&json_buf).map_err(|e| format!("Invalid JSON from Marionette: {e}"))
+}
+
+/// Send a Marionette command: [0, id, method, params]
+fn marionette_send(
+    stream: &mut std::net::TcpStream,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<(), String> {
+    let msg = serde_json::json!([0, id, method, params]);
+    let payload = serde_json::to_string(&msg).map_err(|e| format!("JSON serialize error: {e}"))?;
+    let wire = format!("{}:{payload}", payload.len());
+    stream
+        .write_all(wire.as_bytes())
+        .map_err(|e| format!("Failed to write to Marionette: {e}"))
+}
+
+/// Send a Marionette command and wait for the matching response [1, id, error, result].
+fn marionette_call(
+    stream: &mut std::net::TcpStream,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    marionette_send(stream, id, method, params)?;
+
+    let resp = marionette_recv(stream)?;
+    let arr = resp
+        .as_array()
+        .ok_or("Marionette response is not an array")?;
+
+    if arr.len() < 4 {
+        return Err(format!("Marionette response too short: {resp}"));
+    }
+
+    // arr[0] == 1 (response type), arr[1] == id, arr[2] == error, arr[3] == result
+    if !arr[2].is_null() {
+        return Err(format!("Marionette error: {}", arr[2]));
+    }
+
+    Ok(arr[3].clone())
+}
+
+/// Fetch a URL using headless Firefox via the Marionette protocol.
+fn fetch_with_firefox(browser_path: &Path, url: &str, timeout: Duration) -> ToolOutput {
+    // Find a free port.
+    let port = match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(e) => {
+                return ToolOutput {
+                    output: None,
+                    error: Some(format!("Failed to get local address: {e}")),
+                };
+            }
+        },
+        Err(e) => {
+            return ToolOutput {
+                output: None,
+                error: Some(format!("Failed to bind for port discovery: {e}")),
+            };
+        }
+    };
+
+    // Create a temp profile directory.
+    let profile_dir = format!("/tmp/phyl-firefox-{}", std::process::id());
+    if let Err(e) = std::fs::create_dir_all(&profile_dir) {
+        return ToolOutput {
+            output: None,
+            error: Some(format!("Failed to create Firefox profile dir: {e}")),
+        };
+    }
+
+    // Start Firefox.
+    let mut child = match Command::new(browser_path)
+        .args([
+            "--headless",
+            "--marionette",
+            &format!("--marionette-port={port}"),
+            "--no-remote",
+            "--profile",
+            &profile_dir,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&profile_dir);
+            return ToolOutput {
+                output: None,
+                error: Some(format!("Failed to spawn Firefox: {e}")),
+            };
+        }
+    };
+
+    let result = firefox_marionette_session(port, url, timeout);
+
+    // Kill Firefox.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGKILL);
+    }
+    let _ = child.wait();
+
+    // Clean up profile.
+    let _ = std::fs::remove_dir_all(&profile_dir);
+
+    result
+}
+
+/// Connect to Marionette, navigate, extract HTML, and return a ToolOutput.
+fn firefox_marionette_session(port: u16, url: &str, timeout: Duration) -> ToolOutput {
+    use std::net::TcpStream;
+
+    // Retry connecting until Marionette is ready.
+    let deadline = std::time::Instant::now() + timeout;
+    let mut stream = loop {
+        if std::time::Instant::now() > deadline {
+            return ToolOutput {
+                output: None,
+                error: Some(format!(
+                    "Timed out waiting for Firefox Marionette on port {port}"
+                )),
+            };
+        }
+        match TcpStream::connect(format!("127.0.0.1:{port}")) {
+            Ok(s) => break s,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+        }
+    };
+
+    // Set a read/write timeout on the stream.
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let _ = stream.set_read_timeout(Some(remaining));
+    let _ = stream.set_write_timeout(Some(remaining));
+
+    // Read the handshake message.
+    if let Err(e) = marionette_recv(&mut stream) {
+        return ToolOutput {
+            output: None,
+            error: Some(format!("Failed to read Marionette handshake: {e}")),
+        };
+    }
+
+    // NewSession
+    if let Err(e) = marionette_call(
+        &mut stream,
+        1,
+        "WebDriver:NewSession",
+        serde_json::json!({}),
+    ) {
+        return ToolOutput {
+            output: None,
+            error: Some(format!("Marionette NewSession failed: {e}")),
+        };
+    }
+
+    // Navigate
+    if let Err(e) = marionette_call(
+        &mut stream,
+        2,
+        "WebDriver:Navigate",
+        serde_json::json!({"url": url}),
+    ) {
+        let _ = marionette_call(
+            &mut stream,
+            99,
+            "WebDriver:DeleteSession",
+            serde_json::json!({}),
+        );
+        return ToolOutput {
+            output: None,
+            error: Some(format!("Marionette Navigate failed: {e}")),
+        };
+    }
+
+    // Extract rendered HTML.
+    let html_result = marionette_call(
+        &mut stream,
+        3,
+        "WebDriver:ExecuteScript",
+        serde_json::json!({
+            "script": "return document.documentElement.outerHTML"
+        }),
+    );
+
+    // Always try to clean up the session.
+    let _ = marionette_call(
+        &mut stream,
+        4,
+        "WebDriver:DeleteSession",
+        serde_json::json!({}),
+    );
+
+    match html_result {
+        Ok(result) => {
+            let html = result
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if html.is_empty() {
+                ToolOutput {
+                    output: None,
+                    error: Some("Firefox returned empty HTML".to_string()),
+                }
+            } else {
+                ToolOutput {
+                    output: Some(html),
+                    error: None,
+                }
+            }
+        }
+        Err(e) => ToolOutput {
+            output: None,
+            error: Some(format!("Marionette ExecuteScript failed: {e}")),
+        },
+    }
+}
+
+/// Wait for a child process with a timeout. Returns (ExitStatus, stdout, stderr).
+fn wait_with_timeout(
+    child: std::process::Child,
+    timeout: Duration,
+) -> Result<(std::process::ExitStatus, String, String), String> {
+    use std::sync::mpsc;
+    use std::thread;
+
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let mut child = child;
+        let stdout = child
+            .stdout
+            .take()
+            .map(|mut r| {
+                let mut s = String::new();
+                let _ = r.read_to_string(&mut s);
+                s
+            })
+            .unwrap_or_default();
+        let stderr = child
+            .stderr
+            .take()
+            .map(|mut r| {
+                let mut s = String::new();
+                let _ = r.read_to_string(&mut s);
+                s
+            })
+            .unwrap_or_default();
+        let status = child.wait();
+        let _ = tx.send((status, stdout, stderr));
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok((Ok(status), stdout, stderr)) => Ok((status, stdout, stderr)),
+        Ok((Err(e), _, _)) => Err(format!("Failed to wait on process: {e}")),
+        Err(_) => {
+            // Timeout — kill the process.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+            Err(format!("Command timed out after {timeout:?}"))
+        }
+    }
+}
+
+fn web_fetch(url: &str) -> ToolOutput {
+    // Validate URL scheme.
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return ToolOutput {
+            output: None,
+            error: Some("URL must start with http:// or https://".to_string()),
+        };
+    }
+
+    let browser = match detect_browser() {
+        Some(b) => b,
+        None => {
+            return ToolOutput {
+                output: None,
+                error: Some(
+                    "No supported browser found. Install Chrome, Chromium, or Firefox.".to_string(),
+                ),
+            };
+        }
+    };
+
+    let timeout_secs = std::env::var("PHYLACTERY_TOOL_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let timeout = Duration::from_secs(timeout_secs);
+
+    match browser {
+        Browser::Chrome(path) => fetch_with_chromium(&path, url, timeout),
+        Browser::Firefox(path) => fetch_with_firefox(&path, url, timeout),
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--spec") {
+        let spec = tool_spec();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&spec).expect("failed to serialize spec")
+        );
+        return;
+    }
+
+    // Read ToolInput from stdin.
+    let mut input_str = String::new();
+    if let Err(e) = io::stdin().read_to_string(&mut input_str) {
+        let err = ToolOutput {
+            output: None,
+            error: Some(format!("Failed to read stdin: {e}")),
+        };
+        println!("{}", serde_json::to_string(&err).unwrap());
+        std::process::exit(1);
+    }
+
+    let input: ToolInput = match serde_json::from_str(&input_str) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = ToolOutput {
+                output: None,
+                error: Some(format!("Invalid JSON input: {e}")),
+            };
+            println!("{}", serde_json::to_string(&err).unwrap());
+            std::process::exit(1);
+        }
+    };
+
+    if input.name != "web_fetch" {
+        let err = ToolOutput {
+            output: None,
+            error: Some(format!("Unknown tool: {}", input.name)),
+        };
+        println!("{}", serde_json::to_string(&err).unwrap());
+        std::process::exit(1);
+    }
+
+    let url = match input.arguments.get("url").and_then(|v| v.as_str()) {
+        Some(u) => u,
+        None => {
+            let err = ToolOutput {
+                output: None,
+                error: Some("Missing required argument: url".to_string()),
+            };
+            println!("{}", serde_json::to_string(&err).unwrap());
+            std::process::exit(1);
+        }
+    };
+
+    let result = web_fetch(url);
+    println!("{}", serde_json::to_string(&result).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_spec_is_valid_json() {
+        let spec = tool_spec();
+        let json = serde_json::to_string(&spec).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["name"], "web_fetch");
+        assert_eq!(parsed["mode"], "oneshot");
+        assert!(parsed["sandbox"]["net"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_invalid_url_scheme() {
+        let result = web_fetch("ftp://example.com");
+        assert!(result.error.is_some());
+        assert!(
+            result
+                .error
+                .unwrap()
+                .contains("must start with http:// or https://")
+        );
+    }
+
+    #[test]
+    fn test_find_executable_nonexistent() {
+        assert!(find_executable("this-binary-does-not-exist-xyz123").is_none());
+    }
+
+    #[test]
+    fn test_find_executable_absolute_nonexistent() {
+        assert!(find_executable("/nonexistent/path/to/binary").is_none());
+    }
+
+    #[test]
+    fn test_detect_browser_returns_option() {
+        // Just verify it doesn't panic — result depends on the host system.
+        let _ = detect_browser();
+    }
+}
