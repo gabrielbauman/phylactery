@@ -119,6 +119,15 @@ pub async fn run_all() -> anyhow::Result<()> {
         children.push(("phyl-bridge-signal", child));
     }
 
+    // Start phyl-sched unconditionally (scheduler is always useful)
+    if let Some(bin) = find_binary("phyl-sched") {
+        eprintln!("Starting phyl-sched...");
+        let child = Command::new(&bin)
+            .spawn()
+            .context("failed to start phyl-sched")?;
+        children.push(("phyl-sched", child));
+    }
+
     eprintln!("All services started. Press Ctrl-C to stop.");
 
     // Wait for Ctrl-C
