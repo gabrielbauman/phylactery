@@ -112,6 +112,18 @@ fn cmd_install_services_systemd() -> anyhow::Result<()> {
         eprintln!("  wrote phyl-bridge-signal.service");
     }
 
+    // Always generate phyl-sched.service (scheduler is unconditional)
+    {
+        let unit = generate_systemd_unit(
+            "Phylactery scheduler",
+            &format!("{bin_dir}/phyl-sched"),
+            &home_str,
+            Some("phylactd.service"),
+        );
+        write_file_to(&systemd_dir, "phyl-sched.service", &unit)?;
+        eprintln!("  wrote phyl-sched.service");
+    }
+
     // Reload systemd
     eprintln!("Reloading systemd...");
     run_cmd("systemctl", &["--user", "daemon-reload"])?;
@@ -122,7 +134,12 @@ fn cmd_install_services_systemd() -> anyhow::Result<()> {
     eprintln!("  enabled + started phylactd");
 
     // Enable and start services if their units exist
-    for service in &["phyl-poll", "phyl-listen", "phyl-bridge-signal"] {
+    for service in &[
+        "phyl-poll",
+        "phyl-listen",
+        "phyl-bridge-signal",
+        "phyl-sched",
+    ] {
         let unit_file = systemd_dir.join(format!("{service}.service"));
         if unit_file.exists() {
             let svc = format!("{service}.service");
@@ -241,6 +258,19 @@ fn cmd_install_services_launchd() -> anyhow::Result<()> {
         );
         write_file_to(&agents_dir, "com.phylactery.bridge-signal.plist", &plist)?;
         eprintln!("  wrote com.phylactery.bridge-signal.plist");
+    }
+
+    // Always generate phyl-sched plist (scheduler is unconditional)
+    {
+        let plist = generate_launchd_plist(
+            "com.phylactery.sched",
+            &format!("{bin_dir}/phyl-sched"),
+            &home_str,
+            &secrets,
+            true,
+        );
+        write_file_to(&agents_dir, "com.phylactery.sched.plist", &plist)?;
+        eprintln!("  wrote com.phylactery.sched.plist");
     }
 
     // Load all phylactery agents
@@ -405,6 +435,9 @@ async fn cmd_status() -> anyhow::Result<()> {
         _ => "not configured".to_string(),
     };
     println!("  phyl-listen       {listen_status}");
+
+    let sched_status = check_service_status("phyl-sched", "com.phylactery.sched");
+    println!("  phyl-sched        {sched_status}");
 
     let signal_status = match &config.bridge {
         Some(b) if b.signal.is_some() => {

@@ -43,6 +43,7 @@ pub fn run(path: Option<&str>) -> anyhow::Result<()> {
     write_file(&home.join("knowledge/INDEX.md"), INDEX_SEED)?;
     write_file(&home.join("sessions/.gitignore"), SESSIONS_GITIGNORE)?;
     write_file(&home.join("poll/.gitignore"), POLL_GITIGNORE)?;
+    write_file(&home.join("schedule/.gitignore"), SCHEDULE_GITIGNORE)?;
     write_file(&home.join(".gitignore"), ROOT_GITIGNORE)?;
 
     // Initial git commit
@@ -78,6 +79,7 @@ fn create_dirs(home: &Path) -> anyhow::Result<()> {
         home.join("knowledge/journal"),
         home.join("sessions"),
         home.join("poll"),
+        home.join("schedule"),
     ];
 
     for dir in &dirs {
@@ -305,6 +307,13 @@ const SESSIONS_GITIGNORE: &str = "\
 const POLL_GITIGNORE: &str = "\
 # Poll state files are not git-tracked.
 # They contain the last output of each poll command.
+*
+!.gitignore
+";
+
+const SCHEDULE_GITIGNORE: &str = "\
+# Schedule entries are not git-tracked.
+# They are transient JSON files consumed by phyl-sched.
 *
 !.gitignore
 ";

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -536,6 +536,72 @@ pub fn home_dir() -> std::path::PathBuf {
     std::path::PathBuf::from("/tmp/.phylactery")
 }
 
+// --- Schedule types (used by phyl-tool-self and phyl-sched) ---
+
+/// A scheduled session entry stored as a JSON file in `$PHYLACTERY_HOME/schedule/`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleEntry {
+    pub id: Uuid,
+    pub prompt: String,
+    pub at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Parse a time specification into an absolute `DateTime<Utc>`.
+///
+/// Accepts two formats:
+/// - **Datetime**: ISO 8601 timestamp (e.g. `2026-03-04T10:00:00Z`). Rejects past times.
+/// - **Interval**: relative offset from now (e.g. `30s`, `5m`, `2h`, `1d`, `1w`). Rejects zero/negative.
+pub fn parse_time_spec(spec: &str) -> Result<DateTime<Utc>, String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Err("empty time spec".to_string());
+    }
+
+    // Try relative interval first: digits followed by a single unit letter
+    if let Some((num_str, unit)) = split_interval(spec) {
+        let n: i64 = num_str
+            .parse()
+            .map_err(|_| format!("invalid number in interval: {num_str}"))?;
+        if n <= 0 {
+            return Err("interval must be positive".to_string());
+        }
+        let duration = match unit {
+            's' => Duration::seconds(n),
+            'm' => Duration::minutes(n),
+            'h' => Duration::hours(n),
+            'd' => Duration::days(n),
+            'w' => Duration::weeks(n),
+            _ => return Err(format!("unknown interval unit: {unit}")),
+        };
+        return Ok(Utc::now() + duration);
+    }
+
+    // Try ISO 8601 datetime
+    let dt: DateTime<Utc> = spec
+        .parse()
+        .map_err(|e| format!("invalid time spec '{spec}': {e}"))?;
+    if dt <= Utc::now() {
+        return Err("scheduled time is in the past".to_string());
+    }
+    Ok(dt)
+}
+
+/// Split an interval string like "30s" or "2h" into (number_str, unit_char).
+fn split_interval(s: &str) -> Option<(&str, char)> {
+    let unit = s.chars().last()?;
+    if !"smhdw".contains(unit) {
+        return None;
+    }
+    let num_str = &s[..s.len() - 1];
+    if num_str.is_empty() || !num_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some((num_str, unit))
+}
+
 /// Returns the platform-specific data directory for new installations.
 fn platform_data_dir() -> Option<std::path::PathBuf> {
     // Honour explicit XDG_DATA_HOME on any platform.
@@ -553,5 +619,95 @@ fn platform_data_dir() -> Option<std::path::PathBuf> {
     #[cfg(not(target_os = "macos"))]
     {
         Some(std::path::PathBuf::from(&home).join(".local/share/phylactery"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_time_spec_interval_seconds() {
+        let dt = parse_time_spec("30s").unwrap();
+        let diff = dt - Utc::now();
+        assert!(diff.num_seconds() >= 29 && diff.num_seconds() <= 31);
+    }
+
+    #[test]
+    fn test_parse_time_spec_interval_minutes() {
+        let dt = parse_time_spec("5m").unwrap();
+        let diff = dt - Utc::now();
+        assert!(diff.num_minutes() >= 4 && diff.num_minutes() <= 5);
+    }
+
+    #[test]
+    fn test_parse_time_spec_interval_hours() {
+        let dt = parse_time_spec("2h").unwrap();
+        let diff = dt - Utc::now();
+        assert!(diff.num_hours() >= 1 && diff.num_hours() <= 2);
+    }
+
+    #[test]
+    fn test_parse_time_spec_interval_days() {
+        let dt = parse_time_spec("1d").unwrap();
+        let diff = dt - Utc::now();
+        assert!(diff.num_hours() >= 23 && diff.num_hours() <= 24);
+    }
+
+    #[test]
+    fn test_parse_time_spec_interval_weeks() {
+        let dt = parse_time_spec("1w").unwrap();
+        let diff = dt - Utc::now();
+        assert!(diff.num_days() >= 6 && diff.num_days() <= 7);
+    }
+
+    #[test]
+    fn test_parse_time_spec_zero_rejected() {
+        assert!(parse_time_spec("0s").is_err());
+    }
+
+    #[test]
+    fn test_parse_time_spec_empty_rejected() {
+        assert!(parse_time_spec("").is_err());
+    }
+
+    #[test]
+    fn test_parse_time_spec_invalid_unit() {
+        assert!(parse_time_spec("10x").is_err());
+    }
+
+    #[test]
+    fn test_parse_time_spec_iso8601_future() {
+        // Use a date far in the future
+        let dt = parse_time_spec("2099-01-01T00:00:00Z").unwrap();
+        assert!(dt > Utc::now());
+    }
+
+    #[test]
+    fn test_parse_time_spec_iso8601_past_rejected() {
+        assert!(parse_time_spec("2020-01-01T00:00:00Z").is_err());
+    }
+
+    #[test]
+    fn test_parse_time_spec_whitespace_trimmed() {
+        let dt = parse_time_spec("  30s  ").unwrap();
+        let diff = dt - Utc::now();
+        assert!(diff.num_seconds() >= 29 && diff.num_seconds() <= 31);
+    }
+
+    #[test]
+    fn test_schedule_entry_roundtrip() {
+        let entry = ScheduleEntry {
+            id: Uuid::new_v4(),
+            prompt: "test prompt".to_string(),
+            at: Utc::now(),
+            created_by: Some("session-123".to_string()),
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: ScheduleEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, entry.id);
+        assert_eq!(parsed.prompt, entry.prompt);
+        assert_eq!(parsed.created_by, entry.created_by);
     }
 }
