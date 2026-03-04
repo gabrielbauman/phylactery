@@ -88,8 +88,12 @@ fn format_tool_definitions(tools: &[ToolSpec]) -> String {
          by including multiple <tool_call> blocks.\n",
     );
     s.push_str(
-        "- When you call a tool, STOP and wait for results. \
-         Do not predict, fabricate, or assume tool output.\n",
+        "- You do not execute tools yourself. Another system runs them and \
+         provides results in the next turn. Do not output tool results.\n",
+    );
+    s.push_str(
+        "- When you call a tool, STOP. Do not predict, fabricate, or \
+         assume what the output will be.\n",
     );
     s.push_str("- Include brief reasoning before tool calls, not after.\n");
     s.push_str(
