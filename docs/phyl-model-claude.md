@@ -17,8 +17,10 @@ See [Protocols](protocols.md) for the full JSON schemas.
 4. Invoke the Claude CLI:
    ```sh
    claude --print --output-format json --no-session-persistence \
-     --tools "" --system-prompt "..." --model <optional>
+     --tools "" --strict-mcp-config --disable-slash-commands \
+     --system-prompt "..." --model <optional>
    ```
+   The `--tools ""` disables built-in tools, `--strict-mcp-config` (without any `--mcp-config`) suppresses the user's MCP servers, and `--disable-slash-commands` prevents skills from interfering. This ensures the model only sees phylactery's prompt-defined tools.
 5. Parse the JSON response (`result`, `is_error` fields)
 6. Extract `<tool_call>` blocks from response text into structured `ToolCall` objects
 7. Write `ModelResponse` to stdout
@@ -41,6 +43,19 @@ These are extracted from the response text and converted into structured `ToolCa
 |----------|---------|---------|
 | `PHYL_CLAUDE_CLI` | `claude` | Path to the Claude CLI binary |
 | `PHYL_CLAUDE_MODEL` | *(none)* | Model name override (e.g., `claude-sonnet-4-20250514`) |
+
+## Limitations
+
+The Claude adapter uses the `claude` CLI in `--print` mode, which runs through Claude Code rather than the Anthropic API directly. Tool calling uses a prompt-based XML format (`<tool_call>` tags) rather than the API's native `tool_use` protocol. This is inherently less reliable than native tool calling — the model may occasionally:
+
+- Describe tool actions in prose instead of calling them
+- Use an incorrect format for tool calls
+- Attempt to call tools that don't exist
+- Emit a valid tool call but also fabricate a result in the same response instead of waiting for execution (the adapter strips `<tool_result>` and `<tool_output>` blocks when this happens, but prose summaries of fabricated results may remain in the content)
+
+For the most reliable tool calling, use `phyl-model-openai` with a provider that supports native tool_use (set `PHYL_OPENAI_TOOL_MODE=native`), or the forthcoming `phyl-model-anthropic` adapter which will use the Anthropic Messages API directly.
+
+The Claude CLI adapter exists primarily to let users with Claude Pro/Max subscriptions use phylactery without a separate API account.
 
 ## Writing Your Own Adapter
 
