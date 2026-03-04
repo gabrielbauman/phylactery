@@ -58,7 +58,7 @@ fn tool_specs() -> Vec<ToolSpec> {
                 },
                 "required": ["url"]
             }),
-            sandbox: net_sandbox,
+            sandbox: net_sandbox.clone(),
         },
         ToolSpec {
             name: "web_fetch".to_string(),
@@ -78,6 +78,24 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "required": ["url"]
             }),
             sandbox: browser_sandbox,
+        },
+        ToolSpec {
+            name: "web_search".to_string(),
+            description: "Search the web using DuckDuckGo and return results with titles, \
+                          URLs, and snippets."
+                .to_string(),
+            mode: ToolMode::Oneshot,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    }
+                },
+                "required": ["query"]
+            }),
+            sandbox: net_sandbox,
         },
     ]
 }
@@ -538,6 +556,246 @@ fn http_fetch(url: &str) -> ToolOutput {
     }
 }
 
+/// URL-encode a query string for use in a URL parameter.
+fn url_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len() * 2);
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            b' ' => encoded.push('+'),
+            _ => {
+                encoded.push('%');
+                encoded.push(char::from(b"0123456789ABCDEF"[(byte >> 4) as usize]));
+                encoded.push(char::from(b"0123456789ABCDEF"[(byte & 0x0F) as usize]));
+            }
+        }
+    }
+    encoded
+}
+
+/// Percent-decode a string (e.g. from a URL query parameter).
+fn percent_decode(input: &str) -> String {
+    let mut decoded = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
+        {
+            decoded.push((hi << 4) | lo);
+            i += 3;
+            continue;
+        }
+        if bytes[i] == b'+' {
+            decoded.push(b' ');
+        } else {
+            decoded.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Strip HTML tags from a string, returning plain text.
+fn strip_html_tags(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for ch in input.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Extract the value of a query parameter from a URL string.
+fn extract_query_param<'a>(url: &'a str, param: &str) -> Option<&'a str> {
+    let query_start = url.find('?').map(|i| i + 1).unwrap_or(url.len());
+    let query = &url[query_start..];
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=')
+            && key == param
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// A single search result parsed from DuckDuckGo HTML.
+#[derive(Debug)]
+struct SearchResult {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
+/// Parse DuckDuckGo HTML search results page into structured results.
+fn parse_ddg_results(html: &str) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+
+    // Split on result__a anchors to find each result title+link
+    for chunk in html.split("class=\"result__a\"") {
+        if results.len() >= 20 {
+            break;
+        }
+        // Skip the first chunk (before any result)
+        // Extract href from this anchor tag
+        // The chunk starts inside the <a> tag after class="result__a"
+        // Pattern: ... href="..." ...>TITLE</a>
+        let href = if let Some(href_start) = chunk.find("href=\"") {
+            let start = href_start + 6;
+            if let Some(end) = chunk[start..].find('"') {
+                &chunk[start..start + end]
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        // Extract real URL from DDG redirect
+        let url = if let Some(uddg) = extract_query_param(href, "uddg") {
+            percent_decode(uddg)
+        } else {
+            // If no redirect, use href directly (strip leading //)
+            let h = href.trim_start_matches("//");
+            if h.starts_with("http") {
+                h.to_string()
+            } else {
+                format!("https://{h}")
+            }
+        };
+
+        // Extract title: text between > and </a>
+        let title = if let Some(close_bracket) = chunk.find('>') {
+            let after = &chunk[close_bracket + 1..];
+            if let Some(end_tag) = after.find("</a>") {
+                strip_html_tags(&after[..end_tag]).trim().to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        if title.is_empty() {
+            continue;
+        }
+
+        // Find snippet in the same result block
+        let snippet = if let Some(snip_pos) = chunk.find("class=\"result__snippet\"") {
+            let after_class = &chunk[snip_pos..];
+            if let Some(gt) = after_class.find('>') {
+                let content = &after_class[gt + 1..];
+                if let Some(end) = content.find("</a>") {
+                    strip_html_tags(&content[..end]).trim().to_string()
+                } else if let Some(end) = content.find("</span>") {
+                    strip_html_tags(&content[..end]).trim().to_string()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        results.push(SearchResult {
+            title,
+            url,
+            snippet,
+        });
+    }
+
+    results
+}
+
+fn web_search(query: &str) -> ToolOutput {
+    if query.trim().is_empty() {
+        return ToolOutput {
+            output: None,
+            error: Some("Search query cannot be empty".to_string()),
+        };
+    }
+
+    let encoded_query = url_encode(query);
+    let search_url = format!("https://html.duckduckgo.com/html/?q={encoded_query}");
+
+    let timeout_secs = std::env::var("PHYLACTERY_TOOL_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(timeout_secs))
+        .user_agent(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+        )
+        .build();
+
+    let html = match agent.get(&search_url).call() {
+        Ok(response) => match response.into_string() {
+            Ok(body) => body,
+            Err(e) => {
+                return ToolOutput {
+                    output: None,
+                    error: Some(format!("Failed to read response body: {e}")),
+                };
+            }
+        },
+        Err(e) => {
+            return ToolOutput {
+                output: None,
+                error: Some(format!("Search request failed: {e}")),
+            };
+        }
+    };
+
+    let results = parse_ddg_results(&html);
+
+    if results.is_empty() {
+        return ToolOutput {
+            output: Some(format!("No results found for: {query}")),
+            error: None,
+        };
+    }
+
+    let mut output = String::new();
+    for (i, result) in results.iter().enumerate() {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&format!("{}. {}\n", i + 1, result.title));
+        output.push_str(&format!("   {}\n", result.url));
+        if !result.snippet.is_empty() {
+            output.push_str(&format!("   {}\n", result.snippet));
+        }
+    }
+
+    ToolOutput {
+        output: Some(output),
+        error: None,
+    }
+}
+
 fn web_fetch(url: &str) -> ToolOutput {
     // Validate URL scheme.
     if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -606,21 +864,39 @@ fn main() {
         }
     };
 
-    let url = match input.arguments.get("url").and_then(|v| v.as_str()) {
-        Some(u) => u,
-        None => {
-            let err = ToolOutput {
-                output: None,
-                error: Some("Missing required argument: url".to_string()),
-            };
-            println!("{}", serde_json::to_string(&err).unwrap());
-            std::process::exit(1);
-        }
-    };
-
     let result = match input.name.as_str() {
-        "http_fetch" => http_fetch(url),
-        "web_fetch" => web_fetch(url),
+        "http_fetch" | "web_fetch" => {
+            let url = match input.arguments.get("url").and_then(|v| v.as_str()) {
+                Some(u) => u,
+                None => {
+                    let err = ToolOutput {
+                        output: None,
+                        error: Some("Missing required argument: url".to_string()),
+                    };
+                    println!("{}", serde_json::to_string(&err).unwrap());
+                    std::process::exit(1);
+                }
+            };
+            if input.name == "http_fetch" {
+                http_fetch(url)
+            } else {
+                web_fetch(url)
+            }
+        }
+        "web_search" => {
+            let query = match input.arguments.get("query").and_then(|v| v.as_str()) {
+                Some(q) => q,
+                None => {
+                    let err = ToolOutput {
+                        output: None,
+                        error: Some("Missing required argument: query".to_string()),
+                    };
+                    println!("{}", serde_json::to_string(&err).unwrap());
+                    std::process::exit(1);
+                }
+            };
+            web_search(query)
+        }
         other => ToolOutput {
             output: None,
             error: Some(format!("Unknown tool: {other}")),
@@ -634,15 +910,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tool_specs_returns_both() {
+    fn test_tool_specs_returns_all() {
         let specs = tool_specs();
-        assert_eq!(specs.len(), 2);
+        assert_eq!(specs.len(), 3);
         assert_eq!(specs[0].name, "http_fetch");
         assert_eq!(specs[1].name, "web_fetch");
+        assert_eq!(specs[2].name, "web_search");
         for spec in &specs {
             assert_eq!(spec.mode, ToolMode::Oneshot);
             assert!(spec.sandbox.as_ref().unwrap().net);
         }
+    }
+
+    #[test]
+    fn test_web_search_spec_has_query_param() {
+        let specs = tool_specs();
+        let search_spec = specs.iter().find(|s| s.name == "web_search").unwrap();
+        let required = search_spec.parameters["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "query");
+        assert!(search_spec.parameters["properties"]["query"].is_object());
     }
 
     #[test]
@@ -651,7 +938,7 @@ mod tests {
         let json = serde_json::to_string(&specs).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_array());
-        assert_eq!(parsed.as_array().unwrap().len(), 2);
+        assert_eq!(parsed.as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -692,5 +979,100 @@ mod tests {
     fn test_detect_browser_returns_option() {
         // Just verify it doesn't panic — result depends on the host system.
         let _ = detect_browser();
+    }
+
+    #[test]
+    fn test_url_encode_basic() {
+        assert_eq!(url_encode("hello world"), "hello+world");
+        assert_eq!(url_encode("rust lang"), "rust+lang");
+        assert_eq!(url_encode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(url_encode("simple"), "simple");
+    }
+
+    #[test]
+    fn test_percent_decode() {
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("a%26b"), "a&b");
+        assert_eq!(percent_decode("hello+world"), "hello world");
+        assert_eq!(percent_decode("no%encoding"), "no%encoding"); // invalid sequence preserved
+    }
+
+    #[test]
+    fn test_strip_html_tags() {
+        assert_eq!(strip_html_tags("<b>bold</b> text"), "bold text");
+        assert_eq!(strip_html_tags("no tags here"), "no tags here");
+        assert_eq!(strip_html_tags("<a href=\"x\">link</a>"), "link");
+    }
+
+    #[test]
+    fn test_extract_query_param() {
+        assert_eq!(
+            extract_query_param("http://example.com?foo=bar&baz=qux", "foo"),
+            Some("bar")
+        );
+        assert_eq!(
+            extract_query_param("http://example.com?foo=bar&baz=qux", "baz"),
+            Some("qux")
+        );
+        assert_eq!(
+            extract_query_param("http://example.com?foo=bar", "missing"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_ddg_results() {
+        let html = r#"
+        <div class="result">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust-lang.org%2F&rut=abc">
+                <b>Rust</b> Programming Language
+            </a>
+            <a class="result__snippet">A language empowering everyone to build <b>reliable</b> software.</a>
+        </div>
+        <div class="result">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FRust&rut=def">
+                Rust - Wikipedia
+            </a>
+            <a class="result__snippet">Rust is a systems programming language.</a>
+        </div>
+        "#;
+
+        let results = parse_ddg_results(html);
+        assert_eq!(results.len(), 2);
+
+        assert_eq!(results[0].title, "Rust Programming Language");
+        assert_eq!(results[0].url, "https://www.rust-lang.org/");
+        assert_eq!(
+            results[0].snippet,
+            "A language empowering everyone to build reliable software."
+        );
+
+        assert_eq!(results[1].title, "Rust - Wikipedia");
+        assert_eq!(results[1].url, "https://en.wikipedia.org/wiki/Rust");
+        assert_eq!(
+            results[1].snippet,
+            "Rust is a systems programming language."
+        );
+    }
+
+    #[test]
+    fn test_parse_ddg_results_caps_at_20() {
+        // Generate HTML with 25 fake results
+        let mut html = String::new();
+        for i in 0..25 {
+            html.push_str(&format!(
+                r#"<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F{i}&rut=x">Result {i}</a>
+                <a class="result__snippet">Snippet {i}</a>"#
+            ));
+        }
+        let results = parse_ddg_results(&html);
+        assert_eq!(results.len(), 20);
+    }
+
+    #[test]
+    fn test_web_search_empty_query() {
+        let result = web_search("");
+        assert!(result.error.is_some());
+        assert!(result.error.unwrap().contains("empty"));
     }
 }
