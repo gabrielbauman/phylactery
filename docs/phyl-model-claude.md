@@ -51,6 +51,7 @@ The Claude adapter uses the `claude` CLI in `--print` mode, which runs through C
 - Describe tool actions in prose instead of calling them
 - Use an incorrect format for tool calls
 - Attempt to call tools that don't exist
+- Emit a valid tool call but also fabricate a result in the same response instead of waiting for execution (the adapter strips `<tool_result>` and `<tool_output>` blocks when this happens, but prose summaries of fabricated results may remain in the content)
 
 For the most reliable tool calling, use `phyl-model-openai` with a provider that supports native tool_use (set `PHYL_OPENAI_TOOL_MODE=native`), or the forthcoming `phyl-model-anthropic` adapter which will use the Anthropic Messages API directly.
 
