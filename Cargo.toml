@@ -17,6 +17,7 @@ members = [
     "crates/phyl-listen",
     "crates/phyl-tool-web",
     "crates/phyl-tool-self",
+    "crates/phyl-sched",
 ]
 
 [workspace.package]
