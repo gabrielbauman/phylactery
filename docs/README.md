@@ -28,6 +28,11 @@ Detailed documentation for every component in the Phylactery system.
 - [phyl-tool-files](phyl-tool-files.md) -- File read/write/search operations
 - [phyl-tool-session](phyl-tool-session.md) -- Human interaction and session control
 - [phyl-tool-mcp](phyl-tool-mcp.md) -- Bridge to any MCP server
+- [phyl-tool-self](phyl-tool-self.md) -- Agent self-direction: spawn sessions, schedule future work, sleep
+
+### Services
+
+- [phyl-sched](phyl-sched.md) -- Scheduler: fires due scheduled entries
 
 ### Event Sources
 

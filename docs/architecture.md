@@ -59,7 +59,7 @@ Phylactery uses a deliberate two-repo model:
 
 ## Process Architecture
 
-There is no monolith. Instead, there are 14 crates that build into one library and thirteen binaries:
+There is no monolith. Instead, there are 17 crates that build into one library and sixteen binaries:
 
 | Binary | Role |
 |--------|------|
@@ -73,9 +73,12 @@ There is no monolith. Instead, there are 14 crates that build into one library a
 | `phyl-tool-files` | Tool: read/write/search files. |
 | `phyl-tool-session` | Tool (server mode): human interaction + session control. |
 | `phyl-tool-mcp` | Tool (server mode): bridge to any MCP server. |
+| `phyl-tool-web` | Tool: HTTP fetch, web reading, headless browser, search. |
+| `phyl-tool-self` | Tool (server mode): agent self-direction (spawn/schedule sessions, sleep). |
 | `phyl-bridge-signal` | Bridge: two-way Signal Messenger interface. |
 | `phyl-poll` | Poller: run commands on intervals, sessions on change. |
 | `phyl-listen` | Listener: webhooks, SSE subscriptions, file watches. |
+| `phyl-sched` | Scheduler: fires due entries from `schedule/` via daemon API. |
 
 ## Why So Many Processes?
 
@@ -115,8 +118,10 @@ systemd (or phyl start --all)
   │   ├── phyl-run          (one per active session)
   │   │   ├── phyl-model-*        (model adapter: claude, openai, or custom)
   │   │   ├── phyl-tool-mcp       (server-mode, lifetime of session)
-  │   │   └── phyl-tool-session   (server-mode, lifetime of session)
+  │   │   ├── phyl-tool-session   (server-mode, lifetime of session)
+  │   │   └── phyl-tool-self      (server-mode, lifetime of session)
   │   └── phyl-run          (another session...)
+  ├── phyl-sched            (always running, fires scheduled sessions)
   ├── phyl-poll             (long-lived, polls on intervals)
   ├── phyl-listen           (long-lived, receives events)
   └── phyl-bridge-signal    (long-lived, Signal interface)
