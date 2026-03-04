@@ -1033,6 +1033,7 @@ dependencies = [
  "phyl-core",
  "serde",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

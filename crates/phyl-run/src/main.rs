@@ -579,7 +579,8 @@ fn build_system_prompt(
          === SESSION ===\n\
          Session ID: {session_id}\n\
          Working directory: {scratch}\n\
-         You have access to the following tools: {tools_list}\n\n\
+         You have access to the following tools: {tools_list}\n\
+         Prefer dedicated tools over bash. Only use bash when no other tool can accomplish the task.\n\n\
          Remember: LAW rules are absolute. Obey them unconditionally.",
         scratch = scratch.display(),
     )
@@ -1658,6 +1659,7 @@ mod tests {
         assert!(prompt.contains("No entries yet."));
         assert!(prompt.contains("Session ID: test-123"));
         assert!(prompt.contains("bash, read_file"));
+        assert!(prompt.contains("Prefer dedicated tools over bash"));
         assert!(prompt.contains("LAW rules are absolute"));
     }
 
