@@ -927,6 +927,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyl-model-anthropic"
+version = "0.1.0"
+dependencies = [
+ "phyl-core",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "phyl-model-claude"
 version = "0.1.0"
 dependencies = [

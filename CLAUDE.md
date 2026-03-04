@@ -34,7 +34,7 @@ A personal AI agent built as cooperating Unix processes. See `docs/` for detaile
 
 ## Architecture
 
-13 crates in a Cargo workspace under `crates/`. One shared library, twelve binaries:
+14 crates in a Cargo workspace under `crates/`. One shared library, thirteen binaries:
 
 - **phyl-core** — Shared types library. All protocol types live here. Every other crate depends on it.
 - **phyl** — CLI client. Session subcommands (`session`, `ls`, `status`, `say`, `log`, `stop`, `watch`) talk to the daemon over a Unix socket. Setup subcommands (`init`, `setup systemd`, `setup status`, `setup migrate-xdg`, `config show/validate/edit/add`) manage configuration, secrets, and systemd user units directly. `start --all` runs all services in foreground without systemd.
@@ -42,6 +42,7 @@ A personal AI agent built as cooperating Unix processes. See `docs/` for detaile
 - **phyl-run** — Session runner. The agentic loop: discover tools, invoke model adapter, dispatch tool calls (oneshot in parallel, server-mode via NDJSON), manage FIFO events, write `log.jsonl`, finalize SOUL.md with reflection. Invoked as `phyl-run --session-dir <path> --prompt <text>`.
 - **phyl-model-claude** — Model adapter. Translates between phylactery's JSON format and the `claude` CLI. Reads `ModelRequest` from stdin, writes `ModelResponse` to stdout.
 - **phyl-model-openai** — Model adapter for OpenAI-compatible APIs. Works with Ollama, llama.cpp, vLLM, LM Studio, or any server implementing `/v1/chat/completions`. Supports native tool calling and XML-based fallback. Configured via environment variables (`PHYL_OPENAI_URL`, `PHYL_OPENAI_MODEL`, etc.).
+- **phyl-model-anthropic** — Model adapter for the native Anthropic Messages API. Uses structured `tool_use` content blocks for reliable tool calling. Requires `PHYL_ANTHROPIC_API_KEY`. Configured via environment variables (`PHYL_ANTHROPIC_URL`, `PHYL_ANTHROPIC_MODEL`, etc.).
 - **phyl-tool-bash** — One-shot bash tool. Executes shell commands in `$PHYLACTERY_SESSION_DIR/scratch/` with timeout enforcement. Supports `--spec` for discovery.
 - **phyl-tool-files** — One-shot file tool. Provides `read_file`, `write_file`, and `search_files` operations. Returns an array of `ToolSpec` from `--spec`. Supports `--spec` for discovery.
 - **phyl-tool-session** — Server-mode tool. Provides `ask_human` (blocks for human response) and `done` (signals `end_session`). NDJSON on stdin/stdout. Supports `--spec` and `--serve`.
