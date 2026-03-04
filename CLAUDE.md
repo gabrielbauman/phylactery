@@ -61,6 +61,18 @@ All inter-process communication is JSON on stdin/stdout. The types in `phyl-core
 - **Tool discovery**: `phyl-tool-X --spec` prints `ToolSpec` (or array of them) with a `mode` field (`"oneshot"` or `"server"`)
 - **Bridge protocol**: Bridges are standalone processes that connect to the daemon's `GET /feed` SSE endpoint and post back via `POST /sessions/:id/events`. They are not session-specific and not discovered by `phyl-run`.
 
+## Git Workflow
+
+When implementing features or fixes, follow this workflow:
+
+1. **Branch first.** Create a branch from `main` at the start of the work, prefixed with the current user's name (e.g. `gbauman/add-widget`). Include issue IDs in the branch name if applicable (e.g. `gbauman/42-add-widget`). Determine the username from `git config user.name` or the system username.
+2. **Commit regularly.** Make small, logical commits as the implementation develops — don't save everything for one big commit at the end.
+3. **Verify before each commit.** Before every commit, run `cargo fmt --all`, `cargo clippy --workspace --all-targets`, and `cargo test`. Fix any issues before committing.
+4. **Ask before creating a PR.** When the implementation is complete, ask the user before creating the pull request.
+5. **Watch CI after PR creation.** After creating the PR, watch CI checks (`gh pr checks <number> --watch`). If any check fails, diagnose and fix the issue, push the fix, and watch again until all checks pass.
+6. **Ask before merging.** Once all CI checks pass, ask the user for permission to merge. Only merge after they agree.
+7. **Clean up.** After merging, switch back to `main`, pull, and delete the local branch if needed.
+
 ## Conventions
 
 - Rust edition 2024. Common dependencies (`serde`, `serde_json`, `chrono`, `uuid`, `toml`, `libc`, `tokio`, `axum`, `hyper`, `hyper-util`, `http-body-util`, `bytes`, `tower`, `anyhow`) are declared as workspace dependencies in the root `Cargo.toml`.
