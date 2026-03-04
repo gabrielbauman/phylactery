@@ -17,8 +17,10 @@ See [Protocols](protocols.md) for the full JSON schemas.
 4. Invoke the Claude CLI:
    ```sh
    claude --print --output-format json --no-session-persistence \
-     --tools "" --system-prompt "..." --model <optional>
+     --tools "" --strict-mcp-config --disable-slash-commands \
+     --system-prompt "..." --model <optional>
    ```
+   The `--tools ""` disables built-in tools, `--strict-mcp-config` (without any `--mcp-config`) suppresses the user's MCP servers, and `--disable-slash-commands` prevents skills from interfering. This ensures the model only sees phylactery's prompt-defined tools.
 5. Parse the JSON response (`result`, `is_error` fields)
 6. Extract `<tool_call>` blocks from response text into structured `ToolCall` objects
 7. Write `ModelResponse` to stdout
