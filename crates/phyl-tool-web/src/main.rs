@@ -1,4 +1,5 @@
 use phyl_core::{SandboxSpec, ToolInput, ToolMode, ToolOutput, ToolSpec};
+use serde_json::Map;
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -41,11 +42,17 @@ fn tool_specs() -> Vec<ToolSpec> {
         max_fds: None,
     });
 
+    let headers_schema = serde_json::json!({
+        "type": "object",
+        "description": "Optional HTTP headers as key-value pairs",
+        "additionalProperties": { "type": "string" }
+    });
+
     vec![
         ToolSpec {
             name: "http_fetch".to_string(),
             description: "Fetch a URL and return the response body. \
-                          Use for HTML pages, JSON APIs, or any HTTP request."
+                          Use for HTML pages, JSON APIs, or any HTTP GET request."
                 .to_string(),
             mode: ToolMode::Oneshot,
             parameters: serde_json::json!({
@@ -54,7 +61,54 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "url": {
                         "type": "string",
                         "description": "The URL to fetch (must be http:// or https://)"
-                    }
+                    },
+                    "headers": headers_schema
+                },
+                "required": ["url"]
+            }),
+            sandbox: net_sandbox.clone(),
+        },
+        ToolSpec {
+            name: "http_post".to_string(),
+            description: "Send an HTTP POST request. Returns status, response headers, \
+                          and body. Use for submitting data to APIs, webhooks, etc."
+                .to_string(),
+            mode: ToolMode::Oneshot,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to POST to (must be http:// or https://)"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "The request body"
+                    },
+                    "headers": headers_schema
+                },
+                "required": ["url"]
+            }),
+            sandbox: net_sandbox.clone(),
+        },
+        ToolSpec {
+            name: "http_put".to_string(),
+            description: "Send an HTTP PUT request. Returns status, response headers, \
+                          and body. Use for updating resources via APIs."
+                .to_string(),
+            mode: ToolMode::Oneshot,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to PUT to (must be http:// or https://)"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "The request body"
+                    },
+                    "headers": headers_schema
                 },
                 "required": ["url"]
             }),
@@ -518,7 +572,27 @@ fn wait_with_timeout(
     }
 }
 
-fn http_fetch(url: &str) -> ToolOutput {
+fn build_http_agent() -> ureq::Agent {
+    let timeout_secs = std::env::var("PHYLACTERY_TOOL_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(timeout_secs))
+        .redirects(10)
+        .user_agent(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+        )
+        .build()
+}
+
+fn http_request(
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+    headers: &Map<String, serde_json::Value>,
+) -> ToolOutput {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return ToolOutput {
             output: None,
@@ -526,29 +600,93 @@ fn http_fetch(url: &str) -> ToolOutput {
         };
     }
 
-    let timeout_secs = std::env::var("PHYLACTERY_TOOL_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let agent = build_http_agent();
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(timeout_secs))
-        .user_agent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
-        )
-        .build();
-
-    match agent.get(url).call() {
-        Ok(response) => match response.into_string() {
-            Ok(body) => ToolOutput {
-                output: Some(body),
-                error: None,
-            },
-            Err(e) => ToolOutput {
+    let mut request = match method {
+        "GET" => agent.get(url),
+        "POST" => agent.post(url),
+        "PUT" => agent.put(url),
+        _ => {
+            return ToolOutput {
                 output: None,
-                error: Some(format!("Failed to read response body: {e}")),
-            },
-        },
+                error: Some(format!("Unsupported HTTP method: {method}")),
+            };
+        }
+    };
+
+    for (name, value) in headers {
+        if let Some(v) = value.as_str() {
+            request = request.set(name, v);
+        }
+    }
+
+    let include_status = method != "GET";
+
+    let result = if method == "GET" {
+        request.call()
+    } else {
+        request.send_string(body.unwrap_or(""))
+    };
+
+    match result {
+        Ok(response) => {
+            if include_status {
+                let status = response.status();
+                let status_text = response.status_text().to_string();
+                let mut resp_headers = String::new();
+                for name in response.headers_names() {
+                    if let Some(value) = response.header(&name) {
+                        resp_headers.push_str(&format!("{name}: {value}\n"));
+                    }
+                }
+                match response.into_string() {
+                    Ok(resp_body) => ToolOutput {
+                        output: Some(format!(
+                            "HTTP {status} {status_text}\n{resp_headers}\n{resp_body}"
+                        )),
+                        error: None,
+                    },
+                    Err(e) => ToolOutput {
+                        output: None,
+                        error: Some(format!("Failed to read response body: {e}")),
+                    },
+                }
+            } else {
+                match response.into_string() {
+                    Ok(resp_body) => ToolOutput {
+                        output: Some(resp_body),
+                        error: None,
+                    },
+                    Err(e) => ToolOutput {
+                        output: None,
+                        error: Some(format!("Failed to read response body: {e}")),
+                    },
+                }
+            }
+        }
+        Err(ureq::Error::Status(code, response)) if include_status => {
+            let status_text = response.status_text().to_string();
+            let mut resp_headers = String::new();
+            for name in response.headers_names() {
+                if let Some(value) = response.header(&name) {
+                    resp_headers.push_str(&format!("{name}: {value}\n"));
+                }
+            }
+            match response.into_string() {
+                Ok(resp_body) => ToolOutput {
+                    output: Some(format!(
+                        "HTTP {code} {status_text}\n{resp_headers}\n{resp_body}"
+                    )),
+                    error: None,
+                },
+                Err(e) => ToolOutput {
+                    output: None,
+                    error: Some(format!(
+                        "HTTP {code} {status_text} (failed to read body: {e})"
+                    )),
+                },
+            }
+        }
         Err(e) => ToolOutput {
             output: None,
             error: Some(format!("HTTP request failed: {e}")),
@@ -739,17 +877,7 @@ fn web_search(query: &str) -> ToolOutput {
     let encoded_query = url_encode(query);
     let search_url = format!("https://html.duckduckgo.com/html/?q={encoded_query}");
 
-    let timeout_secs = std::env::var("PHYLACTERY_TOOL_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_TIMEOUT_SECS);
-
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(timeout_secs))
-        .user_agent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
-        )
-        .build();
+    let agent = build_http_agent();
 
     let html = match agent.get(&search_url).call() {
         Ok(response) => match response.into_string() {
@@ -864,8 +992,10 @@ fn main() {
         }
     };
 
+    let empty_headers = Map::new();
+
     let result = match input.name.as_str() {
-        "http_fetch" | "web_fetch" => {
+        "http_fetch" | "http_post" | "http_put" => {
             let url = match input.arguments.get("url").and_then(|v| v.as_str()) {
                 Some(u) => u,
                 None => {
@@ -877,11 +1007,32 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            if input.name == "http_fetch" {
-                http_fetch(url)
-            } else {
-                web_fetch(url)
-            }
+            let headers = input
+                .arguments
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .unwrap_or(&empty_headers);
+            let body = input.arguments.get("body").and_then(|v| v.as_str());
+            let method = match input.name.as_str() {
+                "http_post" => "POST",
+                "http_put" => "PUT",
+                _ => "GET",
+            };
+            http_request(method, url, body, headers)
+        }
+        "web_fetch" => {
+            let url = match input.arguments.get("url").and_then(|v| v.as_str()) {
+                Some(u) => u,
+                None => {
+                    let err = ToolOutput {
+                        output: None,
+                        error: Some("Missing required argument: url".to_string()),
+                    };
+                    println!("{}", serde_json::to_string(&err).unwrap());
+                    std::process::exit(1);
+                }
+            };
+            web_fetch(url)
         }
         "web_search" => {
             let query = match input.arguments.get("query").and_then(|v| v.as_str()) {
@@ -912,10 +1063,12 @@ mod tests {
     #[test]
     fn test_tool_specs_returns_all() {
         let specs = tool_specs();
-        assert_eq!(specs.len(), 3);
+        assert_eq!(specs.len(), 5);
         assert_eq!(specs[0].name, "http_fetch");
-        assert_eq!(specs[1].name, "web_fetch");
-        assert_eq!(specs[2].name, "web_search");
+        assert_eq!(specs[1].name, "http_post");
+        assert_eq!(specs[2].name, "http_put");
+        assert_eq!(specs[3].name, "web_fetch");
+        assert_eq!(specs[4].name, "web_search");
         for spec in &specs {
             assert_eq!(spec.mode, ToolMode::Oneshot);
             assert!(spec.sandbox.as_ref().unwrap().net);
@@ -933,17 +1086,46 @@ mod tests {
     }
 
     #[test]
+    fn test_http_post_spec() {
+        let specs = tool_specs();
+        let spec = specs.iter().find(|s| s.name == "http_post").unwrap();
+        let required = spec.parameters["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "url");
+        assert!(spec.parameters["properties"]["body"].is_object());
+        assert!(spec.parameters["properties"]["headers"].is_object());
+    }
+
+    #[test]
+    fn test_http_put_spec() {
+        let specs = tool_specs();
+        let spec = specs.iter().find(|s| s.name == "http_put").unwrap();
+        let required = spec.parameters["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "url");
+        assert!(spec.parameters["properties"]["body"].is_object());
+        assert!(spec.parameters["properties"]["headers"].is_object());
+    }
+
+    #[test]
+    fn test_http_fetch_spec_has_headers() {
+        let specs = tool_specs();
+        let spec = specs.iter().find(|s| s.name == "http_fetch").unwrap();
+        assert!(spec.parameters["properties"]["headers"].is_object());
+    }
+
+    #[test]
     fn test_tool_specs_valid_json() {
         let specs = tool_specs();
         let json = serde_json::to_string(&specs).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_array());
-        assert_eq!(parsed.as_array().unwrap().len(), 3);
+        assert_eq!(parsed.as_array().unwrap().len(), 5);
     }
 
     #[test]
     fn test_http_fetch_rejects_non_http() {
-        let result = http_fetch("ftp://example.com");
+        let result = http_request("GET", "ftp://example.com", None, &Map::new());
         assert!(result.error.is_some());
         assert!(
             result
@@ -951,6 +1133,38 @@ mod tests {
                 .unwrap()
                 .contains("must start with http:// or https://")
         );
+    }
+
+    #[test]
+    fn test_http_post_rejects_non_http() {
+        let result = http_request("POST", "ftp://example.com", None, &Map::new());
+        assert!(result.error.is_some());
+        assert!(
+            result
+                .error
+                .unwrap()
+                .contains("must start with http:// or https://")
+        );
+    }
+
+    #[test]
+    fn test_http_put_rejects_non_http() {
+        let result = http_request("PUT", "ftp://example.com", None, &Map::new());
+        assert!(result.error.is_some());
+        assert!(
+            result
+                .error
+                .unwrap()
+                .contains("must start with http:// or https://")
+        );
+    }
+
+    #[test]
+    fn test_http_request_empty_headers() {
+        // Just verifies empty headers don't cause issues (will fail on DNS but that's fine)
+        let result = http_request("GET", "http://localhost:1", None, &Map::new());
+        // Should get a connection error, not a header-related error
+        assert!(result.error.is_some());
     }
 
     #[test]
