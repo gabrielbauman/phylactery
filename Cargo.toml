@@ -16,6 +16,7 @@ members = [
     "crates/phyl-poll",
     "crates/phyl-listen",
     "crates/phyl-tool-web",
+    "crates/phyl-tool-self",
 ]
 
 [workspace.package]
