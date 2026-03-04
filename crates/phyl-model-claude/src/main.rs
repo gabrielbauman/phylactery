@@ -87,7 +87,11 @@ fn format_tool_definitions(tools: &[ToolSpec]) -> String {
         "- You may call multiple tools in one response \
          by including multiple <tool_call> blocks.\n",
     );
-    s.push_str("- Include reasoning as plain text outside the tags.\n");
+    s.push_str(
+        "- When you call a tool, STOP and wait for results. \
+         Do not predict, fabricate, or assume tool output.\n",
+    );
+    s.push_str("- Include brief reasoning before tool calls, not after.\n");
     s.push_str(
         "- If a task cannot be done with these tools, \
          say so instead of attempting workarounds.\n\n",
@@ -330,6 +334,10 @@ fn parse_claude_response(raw: &str) -> ModelResponse {
 ///
 /// Returns the text content (with tool_call blocks removed) and a list of
 /// parsed `ToolCall` values. Each tool call gets a unique UUID-based ID.
+///
+/// When tool calls are extracted, any hallucinated `<tool_result>` or
+/// `<tool_output>` blocks are also stripped from the content, since the
+/// model sometimes fabricates results instead of waiting for execution.
 fn extract_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
     let mut content = String::new();
     let mut tool_calls = Vec::new();
@@ -365,7 +373,35 @@ fn extract_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
     }
     content.push_str(remaining);
 
-    (content.trim().to_string(), tool_calls)
+    let mut content = content.trim().to_string();
+
+    // Strip hallucinated tool result/output blocks when tool calls were found.
+    if !tool_calls.is_empty() {
+        content = strip_xml_blocks(&content, "<tool_result>", "</tool_result>");
+        content = strip_xml_blocks(&content, "<tool_output>", "</tool_output>");
+        content = content.trim().to_string();
+    }
+
+    (content, tool_calls)
+}
+
+/// Remove all occurrences of `<open_tag>...</close_tag>` from `text`.
+fn strip_xml_blocks(text: &str, open_tag: &str, close_tag: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find(open_tag) {
+        result.push_str(&remaining[..start]);
+        let after_open = &remaining[start + open_tag.len()..];
+        if let Some(end) = after_open.find(close_tag) {
+            remaining = &after_open[end + close_tag.len()..];
+        } else {
+            // No closing tag — keep the rest.
+            result.push_str(&remaining[start..]);
+            remaining = "";
+        }
+    }
+    result.push_str(remaining);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +481,40 @@ mod tests {
         let (content, calls) = extract_tool_calls(text);
         assert!(calls.is_empty());
         assert!(content.is_empty());
+    }
+
+    #[test]
+    fn extract_strips_hallucinated_tool_result() {
+        let text = "Let me check.\n\
+            <tool_call>{\"name\": \"bash\", \"arguments\": {\"command\": \"df -h\"}}</tool_call>\n\
+            <tool_result>\nFake output here\n</tool_result>\n\
+            You have 100GB free.";
+        let (content, calls) = extract_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "bash");
+        assert!(!content.contains("tool_result"));
+        assert!(!content.contains("Fake output"));
+        assert!(content.contains("Let me check."));
+        assert!(content.contains("You have 100GB free."));
+    }
+
+    #[test]
+    fn extract_strips_hallucinated_tool_output() {
+        let text = "<tool_call>{\"name\": \"bash\", \"arguments\": {\"command\": \"ls\"}}</tool_call>\n\
+            <tool_output>file1.txt\nfile2.txt</tool_output>";
+        let (content, calls) = extract_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert!(!content.contains("tool_output"));
+        assert!(!content.contains("file1.txt"));
+    }
+
+    #[test]
+    fn extract_no_strip_without_tool_calls() {
+        // tool_result without any tool_call should NOT be stripped.
+        let text = "<tool_result>some data</tool_result>";
+        let (content, calls) = extract_tool_calls(text);
+        assert!(calls.is_empty());
+        assert!(content.contains("<tool_result>"));
     }
 
     // -- build_system_prompt --
