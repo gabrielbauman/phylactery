@@ -218,6 +218,8 @@ fn run_model(request: &ModelRequest) -> ModelResponse {
         .arg("--no-session-persistence")
         .arg("--tools")
         .arg("") // Disable all built-in tools; ours are in the system prompt.
+        .arg("--strict-mcp-config") // Ignore user's MCP servers; only our prompt-defined tools.
+        .arg("--disable-slash-commands") // Disable skills that could interfere.
         .arg("--system-prompt")
         .arg(&system_prompt);
 
