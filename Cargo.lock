@@ -1016,6 +1016,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyl-tool-web"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "phyl-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "phylactd"
 version = "0.1.0"
 dependencies = [

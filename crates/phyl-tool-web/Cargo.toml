@@ -1,0 +1,11 @@
+[package]
+name = "phyl-tool-web"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+phyl-core = { path = "../phyl-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = "0.2"
