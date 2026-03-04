@@ -10,10 +10,12 @@ BINARIES=(
     phyl-run
     phyl-model-claude
     phyl-model-openai
+    phyl-model-anthropic
     phyl-tool-bash
     phyl-tool-files
     phyl-tool-session
     phyl-tool-mcp
+    phyl-tool-web
     phyl-bridge-signal
     phyl-poll
     phyl-listen
