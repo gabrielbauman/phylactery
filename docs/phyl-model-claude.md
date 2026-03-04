@@ -42,6 +42,18 @@ These are extracted from the response text and converted into structured `ToolCa
 | `PHYL_CLAUDE_CLI` | `claude` | Path to the Claude CLI binary |
 | `PHYL_CLAUDE_MODEL` | *(none)* | Model name override (e.g., `claude-sonnet-4-20250514`) |
 
+## Limitations
+
+The Claude adapter uses the `claude` CLI in `--print` mode, which runs through Claude Code rather than the Anthropic API directly. Tool calling uses a prompt-based XML format (`<tool_call>` tags) rather than the API's native `tool_use` protocol. This is inherently less reliable than native tool calling — the model may occasionally:
+
+- Describe tool actions in prose instead of calling them
+- Use an incorrect format for tool calls
+- Attempt to call tools that don't exist
+
+For the most reliable tool calling, use `phyl-model-openai` with a provider that supports native tool_use (set `PHYL_OPENAI_TOOL_MODE=native`), or the forthcoming `phyl-model-anthropic` adapter which will use the Anthropic Messages API directly.
+
+The Claude CLI adapter exists primarily to let users with Claude Pro/Max subscriptions use phylactery without a separate API account.
+
 ## Writing Your Own Adapter
 
 The model adapter protocol is intentionally simple. Want to use Ollama, OpenAI, or a local model? Write a new adapter binary. The contract is:

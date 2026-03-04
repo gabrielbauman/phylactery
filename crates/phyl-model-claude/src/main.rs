@@ -65,18 +65,33 @@ fn build_system_prompt(request: &ModelRequest) -> String {
 
 /// Format tool definitions as instructions for the model.
 ///
-/// Tools are described in a structured format with explicit instructions for
-/// how the model should express tool calls (using `<tool_call>` XML tags).
+/// Tools are described in a structured format with explicit constraints and
+/// instructions for how the model should express tool calls (using `<tool_call>`
+/// XML tags). The prompt is deliberately firm to prevent the model from drifting
+/// toward native tool-calling patterns or hallucinating tools.
 fn format_tool_definitions(tools: &[ToolSpec]) -> String {
     let mut s = String::new();
-    s.push_str("# Available Tools\n\n");
-    s.push_str("You have access to the following tools. ");
-    s.push_str("To call a tool, use this exact XML format:\n\n");
+    s.push_str("# Tools\n\n");
+    s.push_str(
+        "You have access to ONLY the tools listed below. \
+         Do not attempt to perform actions by any other means. \
+         Do not invent or hallucinate tool names — only call tools defined here.\n\n",
+    );
+    s.push_str("To call a tool, output this exact XML format:\n\n");
     s.push_str("<tool_call>\n");
     s.push_str("{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n");
     s.push_str("</tool_call>\n\n");
-    s.push_str("You may call multiple tools in a single response. ");
-    s.push_str("Include your reasoning as plain text outside the tool_call tags.\n\n");
+    s.push_str("Rules:\n");
+    s.push_str("- Use ONLY the <tool_call> XML format shown above. No other format is accepted.\n");
+    s.push_str(
+        "- You may call multiple tools in one response \
+         by including multiple <tool_call> blocks.\n",
+    );
+    s.push_str("- Include reasoning as plain text outside the tags.\n");
+    s.push_str(
+        "- If a task cannot be done with these tools, \
+         say so instead of attempting workarounds.\n\n",
+    );
 
     for tool in tools {
         s.push_str(&format!("## {}\n\n", tool.name));
@@ -472,7 +487,10 @@ mod tests {
         };
         let prompt = build_system_prompt(&request);
         assert!(prompt.contains("You are helpful."));
-        assert!(prompt.contains("# Available Tools"));
+        assert!(prompt.contains("# Tools"));
+        assert!(prompt.contains("ONLY the tools listed below"));
+        assert!(prompt.contains("Do not invent or hallucinate tool names"));
+        assert!(prompt.contains("No other format is accepted"));
         assert!(prompt.contains("## bash"));
         assert!(prompt.contains("Execute a shell command"));
         assert!(prompt.contains("<tool_call>"));
