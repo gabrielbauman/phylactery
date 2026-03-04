@@ -19,6 +19,8 @@ BINARIES=(
     phyl-bridge-signal
     phyl-poll
     phyl-listen
+    phyl-tool-self
+    phyl-sched
 )
 
 INSTALL_DIR="${HOME}/.local/bin"
