@@ -9,3 +9,5 @@ phyl-core = { path = "../phyl-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc = "0.2"
+ureq = { version = "2", features = ["native-certs"] }
+htmd = "0.5"

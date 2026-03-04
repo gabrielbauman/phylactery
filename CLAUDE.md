@@ -34,7 +34,7 @@ A personal AI agent built as cooperating Unix processes. See `docs/` for detaile
 
 ## Architecture
 
-14 crates in a Cargo workspace under `crates/`. One shared library, thirteen binaries:
+15 crates in a Cargo workspace under `crates/`. One shared library, fourteen binaries:
 
 - **phyl-core** — Shared types library. All protocol types live here. Every other crate depends on it.
 - **phyl** — CLI client. Session subcommands (`session`, `ls`, `status`, `say`, `log`, `stop`, `watch`) talk to the daemon over a Unix socket. Setup subcommands (`init`, `setup systemd`, `setup status`, `setup migrate-xdg`, `config show/validate/edit/add`) manage configuration, secrets, and systemd user units directly. `start --all` runs all services in foreground without systemd.
@@ -47,6 +47,7 @@ A personal AI agent built as cooperating Unix processes. See `docs/` for detaile
 - **phyl-tool-files** — One-shot file tool. Provides `read_file`, `write_file`, and `search_files` operations. Returns an array of `ToolSpec` from `--spec`. Supports `--spec` for discovery.
 - **phyl-tool-session** — Server-mode tool. Provides `ask_human` (blocks for human response) and `done` (signals `end_session`). NDJSON on stdin/stdout. Supports `--spec` and `--serve`.
 - **phyl-tool-mcp** — MCP bridge tool. Server-mode, NDJSON on stdin/stdout. Bridges to external MCP servers configured in `config.toml` (`[[mcp]]` sections). Implements MCP JSON-RPC 2.0 client protocol (initialize, tools/list, tools/call). Prefixes tool names with server name (e.g., `filesystem_read_file`). Supports `--spec`, `--serve`, and `--call <server> <tool> <args>` (one-shot CLI mode for use outside sessions, e.g. from `phyl-poll`).
+- **phyl-tool-web** — One-shot web tools. Provides `http_fetch` (raw GET), `http_post`, `http_put`, `web_read` (fetch and convert to clean markdown — preferred for reading page content), `web_fetch` (headless browser for JS-rendered pages), and `web_search` (DuckDuckGo). Supports `--spec` for discovery.
 - **phyl-bridge-signal** — Signal Messenger bridge. Connects to daemon's `GET /feed` SSE stream, forwards questions/done/errors as Signal messages to the owner. Listens for inbound Signal messages from the owner and routes replies to pending questions or creates new sessions. Uses `signal-cli` for Signal protocol. Configured via `[bridge.signal]` in `config.toml`.
 - **phyl-poll** — Poller. Runs commands on configurable intervals, compares output to previous results, and starts sessions via the daemon API when changes are detected. Configured via `[[poll]]` sections in `config.toml`. State files stored in `$PHYLACTERY_HOME/poll/`. Turns any CLI tool into an event source for the agent.
 - **phyl-listen** — Incoming event listener. Three listener types: webhooks (`[[listen.hook]]` — HTTP POST on a TCP port, HMAC-SHA256 verification, event-type routing), SSE subscriptions (`[[listen.sse]]` — persistent connections to event streams, reconnection with `Last-Event-ID`), and file watches (`[[listen.watch]]` — inotify-based, glob filtering, debouncing). All create sessions via the daemon API. Supports rate limiting and deduplication.
