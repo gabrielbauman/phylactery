@@ -18,15 +18,19 @@ use std::io::{self, BufRead, Write};
 use tokio::net::UnixStream;
 use uuid::Uuid;
 
+/// Maximum number of pending schedule entries allowed.
+const MAX_SCHEDULED: usize = 50;
+
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: "spawn_session".to_string(),
-            description: "Create a new session. If 'at' is omitted the session starts \
-                         immediately. If 'at' is provided (ISO 8601 datetime or relative \
-                         interval like '30s', '5m', '2h', '1d', '1w'), the session is \
-                         scheduled for that time."
-                .to_string(),
+            description: format!(
+                "Create a new session. If 'at' is omitted the session starts \
+                 immediately. If 'at' is provided (ISO 8601 datetime or relative \
+                 interval like '30s', '5m', '2h', '1d', '1w'), the session is \
+                 scheduled for that time. Maximum {MAX_SCHEDULED} scheduled entries allowed."
+            ),
             mode: ToolMode::Server,
             parameters: serde_json::json!({
                 "type": "object",
@@ -46,9 +50,11 @@ fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "sleep_until".to_string(),
-            description: "End the current session and schedule a new session to start at \
-                         the specified time. Use this to defer work to a future point."
-                .to_string(),
+            description: format!(
+                "End the current session and schedule a new session to start at \
+                 the specified time. Use this to defer work to a future point. \
+                 Maximum {MAX_SCHEDULED} scheduled entries allowed."
+            ),
             mode: ToolMode::Server,
             parameters: serde_json::json!({
                 "type": "object",
@@ -68,7 +74,10 @@ fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "list_scheduled".to_string(),
-            description: "List all pending scheduled session entries, sorted by time.".to_string(),
+            description: format!(
+                "List all pending scheduled session entries, sorted by time. \
+                 Shows current count and the maximum limit ({MAX_SCHEDULED})."
+            ),
             mode: ToolMode::Server,
             parameters: serde_json::json!({
                 "type": "object",
@@ -315,7 +324,13 @@ fn handle_sleep_until(
 fn handle_list_scheduled(req: &ServerRequest, schedule_dir: &std::path::Path) -> ServerResponse {
     match list_schedule_entries(schedule_dir) {
         Ok(entries) => {
-            let json = serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string());
+            let count = entries.len();
+            let wrapper = serde_json::json!({
+                "count": count,
+                "limit": MAX_SCHEDULED,
+                "entries": entries,
+            });
+            let json = serde_json::to_string_pretty(&wrapper).unwrap_or_else(|_| "{}".to_string());
             ServerResponse {
                 id: req.id.clone(),
                 output: Some(json),
@@ -373,6 +388,15 @@ fn handle_cancel_scheduled(req: &ServerRequest, schedule_dir: &std::path::Path) 
 
 // --- Schedule file helpers ---
 
+fn count_schedule_entries(schedule_dir: &std::path::Path) -> usize {
+    let Ok(dir) = std::fs::read_dir(schedule_dir) else {
+        return 0;
+    };
+    dir.filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .count()
+}
+
 fn write_schedule_entry(
     schedule_dir: &std::path::Path,
     prompt: &str,
@@ -381,6 +405,13 @@ fn write_schedule_entry(
 ) -> Result<Uuid, String> {
     std::fs::create_dir_all(schedule_dir)
         .map_err(|e| format!("failed to create schedule dir: {e}"))?;
+
+    let count = count_schedule_entries(schedule_dir);
+    if count >= MAX_SCHEDULED {
+        return Err(format!(
+            "schedule limit reached ({count}/{MAX_SCHEDULED}). Cancel existing entries to make room."
+        ));
+    }
 
     let id = Uuid::new_v4();
     let entry = ScheduleEntry {
@@ -626,6 +657,59 @@ mod tests {
 
         let entries = list_schedule_entries(&dir).unwrap();
         assert_eq!(entries.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_schedule_limit_enforced() {
+        let dir = std::env::temp_dir().join("phyl-tool-self-test-limit");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+
+        let now = chrono::Utc::now();
+        for i in 0..MAX_SCHEDULED {
+            write_schedule_entry(
+                &dir,
+                &format!("entry {i}"),
+                now + chrono::Duration::hours(i as i64 + 1),
+                None,
+            )
+            .unwrap();
+        }
+
+        // The next one should fail
+        let result = write_schedule_entry(
+            &dir,
+            "one too many",
+            now + chrono::Duration::hours(100),
+            None,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("schedule limit reached"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_count_schedule_entries() {
+        let dir = std::env::temp_dir().join("phyl-tool-self-test-count");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+
+        assert_eq!(count_schedule_entries(&dir), 0);
+
+        let now = chrono::Utc::now();
+        write_schedule_entry(&dir, "a", now + chrono::Duration::hours(1), None).unwrap();
+        assert_eq!(count_schedule_entries(&dir), 1);
+
+        // .tmp files should not be counted
+        std::fs::write(dir.join("something.tmp"), "ignored").unwrap();
+        assert_eq!(count_schedule_entries(&dir), 1);
+
+        write_schedule_entry(&dir, "b", now + chrono::Duration::hours(2), None).unwrap();
+        assert_eq!(count_schedule_entries(&dir), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
