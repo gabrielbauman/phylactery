@@ -18,6 +18,7 @@ members = [
     "crates/phyl-tool-web",
     "crates/phyl-tool-self",
     "crates/phyl-sched",
+    "crates/phyl-tui",
 ]
 
 [workspace.package]

@@ -21,6 +21,7 @@ BINARIES=(
     phyl-listen
     phyl-tool-self
     phyl-sched
+    phyl-tui
 )
 
 INSTALL_DIR="${HOME}/.local/bin"

@@ -160,7 +160,7 @@ pub async fn run_all() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn find_binary(name: &str) -> Option<String> {
+pub fn find_binary(name: &str) -> Option<String> {
     // Check same directory as current executable
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
