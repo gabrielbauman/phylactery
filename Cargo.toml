@@ -18,6 +18,8 @@ members = [
     "crates/phyl-tool-web",
     "crates/phyl-tool-self",
     "crates/phyl-sched",
+    "crates/phyl-tool-psyche",
+    "crates/phyl-psyche-sub",
 ]
 
 [workspace.package]
@@ -38,3 +40,4 @@ http-body-util = "0.1"
 bytes = "1"
 tower = "0.5"
 anyhow = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }

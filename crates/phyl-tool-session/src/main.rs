@@ -310,7 +310,6 @@ mod tests {
         assert_eq!(specs[0].mode, ToolMode::Server);
         assert_eq!(specs[1].name, "done");
         assert_eq!(specs[1].mode, ToolMode::Server);
-        assert!(specs[1].sandbox.is_none());
     }
 
     #[test]

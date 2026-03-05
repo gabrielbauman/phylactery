@@ -215,6 +215,8 @@ pub struct Config {
     pub poll: Vec<PollConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<ListenConfig>,
+    #[serde(default)]
+    pub psyche: PsycheConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -600,6 +602,207 @@ fn split_interval(s: &str) -> Option<(&str, char)> {
         return None;
     }
     Some((num_str, unit))
+}
+
+// --- Psyche system types ---
+
+/// Type of a concern in the psyche system.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConcernType {
+    /// Wants knowledge — a question, an uncertainty, a gap in understanding.
+    Epistemic,
+    /// Wants experience or possession — something desired.
+    Appetitive,
+    /// Wants action or change — something to do about a specific tension.
+    Conative,
+}
+
+/// State of a concern in its lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConcernState {
+    Open,
+    Committed,
+    Resolved,
+    Abandoned,
+}
+
+/// State of a commitment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitmentState {
+    Pending,
+    Fulfilled,
+    Broken,
+}
+
+/// Urgency level for escalations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
+    Low,
+    Normal,
+    High,
+}
+
+/// Kind of escalation to the operator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationKind {
+    Blocked,
+    DecisionRequired,
+    Fyi,
+    RequestCapability,
+}
+
+/// A concern — the core primitive of the psyche system.
+///
+/// Represents something the agent cares about: a question, a desire, or an
+/// intention to act. Concerns accumulate investment through touches and decay
+/// through neglect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Concern {
+    pub concern_id: String,
+    pub description: String,
+    #[serde(rename = "type")]
+    pub concern_type: ConcernType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tension: Option<String>,
+    pub state: ConcernState,
+    pub salience: f64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub origin: String,
+    pub touch_count: u32,
+    pub created_session: u64,
+    pub touched_session: u64,
+    pub created_at: DateTime<Utc>,
+    pub touched_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandoned_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandon_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_from: Option<String>,
+    #[serde(default)]
+    pub spawned: Vec<String>,
+}
+
+/// A commitment — a concrete action the agent has declared it will take.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Commitment {
+    pub commitment_id: String,
+    pub concern_id: String,
+    pub action: String,
+    pub scheduled_for: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+    pub state: CommitmentState,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub spawned_concerns: Vec<String>,
+}
+
+/// An escalation to the operator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Escalation {
+    pub escalation_id: String,
+    pub subject: String,
+    pub body: String,
+    pub urgency: Urgency,
+    pub kind: EscalationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concern_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commitment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocking_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_resolution: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responded_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<String>,
+}
+
+/// A structured knowledge base record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KbRecord {
+    pub record_id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f64,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concern_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalidated_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalidation_reason: Option<String>,
+}
+
+/// The briefing — the continuity artifact produced by the subconscious pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Briefing {
+    pub generated_at: DateTime<Utc>,
+    pub session_number: u64,
+    pub elapsed_wall_time_seconds: u64,
+    pub sessions_since_last_active: u64,
+    pub top_concerns: Vec<Concern>,
+    pub pending_commitments: Vec<Commitment>,
+    pub broken_commitments: Vec<Commitment>,
+    pub flagged_for_abandonment: Vec<Concern>,
+    #[serde(default)]
+    pub suggested_tensions: Vec<String>,
+    #[serde(default)]
+    pub open_escalations: Vec<Escalation>,
+}
+
+/// Configuration for the psyche system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PsycheConfig {
+    #[serde(default = "default_half_life_sessions")]
+    pub half_life_sessions: u32,
+    #[serde(default = "default_abandonment_threshold")]
+    pub abandonment_threshold: f64,
+    #[serde(default = "default_briefing_top_n")]
+    pub briefing_top_n: usize,
+}
+
+impl Default for PsycheConfig {
+    fn default() -> Self {
+        Self {
+            half_life_sessions: default_half_life_sessions(),
+            abandonment_threshold: default_abandonment_threshold(),
+            briefing_top_n: default_briefing_top_n(),
+        }
+    }
+}
+
+fn default_half_life_sessions() -> u32 {
+    10
+}
+
+fn default_abandonment_threshold() -> f64 {
+    0.05
+}
+
+fn default_briefing_top_n() -> usize {
+    5
 }
 
 /// Returns the platform-specific data directory for new installations.
