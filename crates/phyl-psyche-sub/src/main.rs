@@ -74,6 +74,9 @@ pub fn run(db_path: &Path, briefing_path: &Path, config: &PsycheConfig) -> Resul
     Ok(())
 }
 
+/// SQL schema shared with phyl-tool-psyche.
+const SCHEMA: &str = include_str!("../../phyl-tool-psyche/src/schema.sql");
+
 fn open_db(path: &Path) -> Result<Connection, String> {
     let conn = Connection::open(path).map_err(|e| format!("failed to open database: {e}"))?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")
@@ -82,6 +85,8 @@ fn open_db(path: &Path) -> Result<Connection, String> {
         .map_err(|e| format!("failed to enable foreign keys: {e}"))?;
     conn.execute_batch("PRAGMA busy_timeout=5000;")
         .map_err(|e| format!("failed to set busy timeout: {e}"))?;
+    conn.execute_batch(SCHEMA)
+        .map_err(|e| format!("failed to apply schema: {e}"))?;
     Ok(conn)
 }
 
@@ -215,11 +220,10 @@ fn assemble_briefing(
     let suggested_tensions = compute_suggested_tensions(conn)?;
     let open_escalations = query_open_escalations(conn)?;
 
-    // Compute sessions since last active (how many sessions ago was the last touch).
+    // Compute sessions since last active — gap between this session and the previous one.
     let sessions_since = conn
         .query_row(
-            "SELECT MIN(?1 - touched_session) FROM concerns \
-             WHERE state IN ('open', 'committed') AND touched_session > 0",
+            "SELECT ?1 - MAX(session_number) FROM sessions WHERE session_number < ?1",
             [session_number],
             |row| row.get::<_, Option<u64>>(0),
         )

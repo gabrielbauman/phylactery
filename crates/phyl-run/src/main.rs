@@ -528,11 +528,20 @@ fn format_briefing(briefing: &phyl_core::Briefing) -> String {
                 .as_deref()
                 .map(|t| format!(" [{t}]"))
                 .unwrap_or_default();
+            let ctype = match c.concern_type {
+                phyl_core::ConcernType::Epistemic => "epistemic",
+                phyl_core::ConcernType::Appetitive => "appetitive",
+                phyl_core::ConcernType::Conative => "conative",
+            };
+            let cstate = match c.state {
+                phyl_core::ConcernState::Open => "open",
+                phyl_core::ConcernState::Committed => "committed",
+                phyl_core::ConcernState::Resolved => "resolved",
+                phyl_core::ConcernState::Abandoned => "abandoned",
+            };
             parts.push(format!(
-                "  - [{:.2}] ({:?}/{:?}) {}{} [touches: {}, tags: {}]",
+                "  - [{:.2}] ({ctype}/{cstate}) {}{} [touches: {}, tags: {}]",
                 c.salience,
-                c.concern_type,
-                c.state,
                 c.description,
                 tension,
                 c.touch_count,
@@ -587,10 +596,18 @@ fn format_briefing(briefing: &phyl_core::Briefing) -> String {
         parts.push(String::new());
         parts.push("Open escalations:".to_string());
         for e in &briefing.open_escalations {
-            parts.push(format!(
-                "  - [{:?}/{:?}] {}: {}",
-                e.urgency, e.kind, e.subject, e.body,
-            ));
+            let urgency = match e.urgency {
+                phyl_core::Urgency::Low => "low",
+                phyl_core::Urgency::Normal => "normal",
+                phyl_core::Urgency::High => "high",
+            };
+            let ekind = match e.kind {
+                phyl_core::EscalationKind::Blocked => "blocked",
+                phyl_core::EscalationKind::DecisionRequired => "decision_required",
+                phyl_core::EscalationKind::Fyi => "fyi",
+                phyl_core::EscalationKind::RequestCapability => "request_capability",
+            };
+            parts.push(format!("  - [{urgency}/{ekind}] {}: {}", e.subject, e.body,));
         }
     }
 
@@ -611,6 +628,7 @@ fn register_session(home: &Path, session_id: &str) -> u64 {
         }
     };
 
+    let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
     let _ = conn.execute_batch("PRAGMA busy_timeout=5000;");
 
     // Ensure sessions table exists (it might be a fresh DB).
@@ -813,28 +831,18 @@ fn build_system_prompt(
     // Include psyche orientation if psyche tools are available.
     let has_psyche = tool_names.iter().any(|n| n == "open_concern");
     let psyche_section = if has_psyche {
-        "\n\n=== PSYCHE (internal state management) ===\n\
-         You have a structured internal state system. Use it.\n\n\
-         CONCERNS are things with genuine pull — questions you keep returning to (epistemic), \
-         things you want (appetitive), things you intend to change (conative). Only open a \
-         concern if the gap would change your behavior if it closed. Conative concerns require \
-         a tension: what specifically is wrong or incomplete about now.\n\n\
-         COMMITMENTS are concrete promises tied to conative concerns. When you commit, you \
-         declare an action and a deadline. Report every commitment as fulfilled or broken — \
-         broken commitments persist in every briefing until addressed. Do not let commitments \
-         lapse silently.\n\n\
-         SALIENCE decays between sessions. Touch concerns you actively work on to keep them \
-         alive. Concerns that decay below threshold are flagged for abandonment — you must \
-         explicitly resolve or abandon them, not ignore them.\n\n\
-         OBLIGATIONS at session end:\n\
-         - Broken commitments must be acknowledged\n\
-         - Flagged-for-abandonment concerns must be dispositioned (resolve, abandon, or touch to revive)\n\
-         - Overdue commitments should be reported\n\n\
-         ESCALATE when blocked or needing a decision. For FYI or capability requests, \
-         the escalation is recorded. For blocked/decision_required, the operator is notified immediately.\n\n\
-         KB (knowledge base) stores structured facts with confidence scores and optional expiry. \
-         Use it to persist verified information across sessions.\n\n\
-         The BRIEFING section above shows your current state. Read it at session start."
+        "\n\n=== PSYCHE ===\n\
+         Structured internal state. The BRIEFING above is your current snapshot.\n\n\
+         Workflow: surface_concerns → get IDs → touch/resolve/abandon by ID. \
+         open_concern only for things with genuine pull (epistemic=question, \
+         appetitive=desire, conative=intention+tension). commit_to for concrete \
+         actions with deadlines — report every commitment as fulfilled or broken.\n\n\
+         Salience decays between sessions. Touch active concerns to keep them alive. \
+         Flagged-for-abandonment concerns must be dispositioned before session ends. \
+         Broken commitments persist in every briefing until addressed.\n\n\
+         escalate records structured metadata. For blocked/decision_required, \
+         call ask_human immediately after to actually notify the operator.\n\n\
+         kb_record/kb_retrieve/kb_invalidate persist verified facts across sessions."
             .to_string()
     } else {
         String::new()

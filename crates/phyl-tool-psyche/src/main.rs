@@ -189,7 +189,9 @@ fn tool_specs() -> Vec<ToolSpec> {
             description: "Declare a concrete action on a conative concern with a deadline. \
                 Action must be concrete enough that a future you can evaluate unambiguously \
                 whether it was done. 'Look into X' is not an action. 'Make a GET request to X \
-                and record available endpoints' is."
+                and record available endpoints' is. Note: deadlines are checked at session end \
+                — if you need to wake up at a specific time, also use sleep_until or \
+                spawn_session."
                 .to_string(),
             mode: ToolMode::Server,
             parameters: serde_json::json!({
@@ -341,11 +343,11 @@ fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "escalate".to_string(),
-            description: "Escalate something to the human operator with structured metadata. \
-                Use for blocks, decisions needed, FYI notices, or capability requests. \
-                For 'blocked' and 'decision_required' kinds, the response includes a \
-                signal to notify the operator immediately. The escalation is recorded \
-                in the psyche database for tracking."
+            description: "Record a structured escalation. Use for blocks, decisions needed, \
+                FYI notices, or capability requests. For 'blocked' and 'decision_required' \
+                kinds, you MUST call ask_human immediately after to notify the operator — \
+                include the escalation_id. For 'fyi' and 'request_capability', the \
+                escalation is just recorded for the next briefing."
                 .to_string(),
             mode: ToolMode::Server,
             parameters: serde_json::json!({
@@ -1326,29 +1328,21 @@ fn handle_escalate(conn: &Connection, req: &ServerRequest) -> ServerResponse {
         return error_response(&req.id, &format!("database error: {e}"));
     }
 
-    let needs_notify = kind == "blocked" || kind == "decision_required";
+    let needs_human = kind == "blocked" || kind == "decision_required";
 
     let output = serde_json::json!({
         "escalation_id": escalation_id,
         "subject": subject,
         "kind": kind,
         "urgency": urgency,
-        "notify_operator": needs_notify,
+        "action_required": if needs_human {
+            "Call ask_human now to notify the operator. Include the escalation_id in your message."
+        } else {
+            "Escalation recorded. No immediate action needed."
+        },
     });
 
-    // For blocking escalations, emit a signal so phyl-run can trigger ask_human.
-    let signal = if needs_notify {
-        Some(format!("escalation:{escalation_id}"))
-    } else {
-        None
-    };
-
-    ServerResponse {
-        id: req.id.clone(),
-        output: Some(serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())),
-        error: None,
-        signal,
-    }
+    ok_response(&req.id, &output)
 }
 
 // ---------------------------------------------------------------------------
@@ -1839,12 +1833,17 @@ mod tests {
         );
         let resp = dispatch(&conn, &req, 1);
         assert!(resp.error.is_none());
-        assert!(resp.signal.is_none()); // FYI doesn't trigger notification
+        assert!(resp.signal.is_none());
         let output: serde_json::Value =
             serde_json::from_str(resp.output.as_ref().unwrap()).unwrap();
         assert!(output.get("escalation_id").is_some());
         assert_eq!(output["kind"], "fyi");
-        assert_eq!(output["notify_operator"], false);
+        assert!(
+            output["action_required"]
+                .as_str()
+                .unwrap()
+                .contains("No immediate action")
+        );
     }
 
     #[test]
@@ -1862,11 +1861,15 @@ mod tests {
         );
         let resp = dispatch(&conn, &req, 1);
         assert!(resp.error.is_none());
-        assert!(resp.signal.is_some()); // Blocked triggers escalation signal
-        assert!(resp.signal.unwrap().starts_with("escalation:"));
+        assert!(resp.signal.is_none()); // No signal — model calls ask_human separately
         let output: serde_json::Value =
             serde_json::from_str(resp.output.as_ref().unwrap()).unwrap();
-        assert_eq!(output["notify_operator"], true);
+        assert!(
+            output["action_required"]
+                .as_str()
+                .unwrap()
+                .contains("ask_human")
+        );
         assert_eq!(output["urgency"], "high");
     }
 

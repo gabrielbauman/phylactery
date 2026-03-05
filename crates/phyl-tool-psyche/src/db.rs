@@ -26,6 +26,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 ///
 /// Reads the current JSON array from `column` where `pk_column = pk_value`,
 /// appends `new_value`, and writes it back.
+///
+/// SAFETY: `table`, `column`, and `pk_column` are interpolated into SQL.
+/// Only call with hardcoded identifiers — never with user input.
 pub fn append_to_json_array(
     conn: &Connection,
     table: &str,
