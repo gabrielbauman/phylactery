@@ -38,7 +38,9 @@ fn load_config(home: &Path) -> PsycheConfig {
 /// Main entry point — open DB, run subconscious pass, write briefing.
 pub fn run(db_path: &Path, briefing_path: &Path, config: &PsycheConfig) -> Result<(), String> {
     let conn = open_db(db_path)?;
-    let session_number = increment_session_counter(&conn)?;
+
+    // Read the session number set by phyl-run at session start.
+    let session_number = read_session_number(&conn)?;
 
     eprintln!("phyl-psyche-sub: session {session_number} — running subconscious pass");
 
@@ -78,26 +80,28 @@ fn open_db(path: &Path) -> Result<Connection, String> {
         .map_err(|e| format!("failed to set WAL mode: {e}"))?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")
         .map_err(|e| format!("failed to enable foreign keys: {e}"))?;
+    conn.execute_batch("PRAGMA busy_timeout=5000;")
+        .map_err(|e| format!("failed to set busy timeout: {e}"))?;
     Ok(conn)
 }
 
-/// Increment the session counter and return the new session number.
-fn increment_session_counter(conn: &Connection) -> Result<u64, String> {
-    let session_id =
-        std::env::var("PHYLACTERY_SESSION_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
-    let now = Utc::now().to_rfc3339();
+/// Read the current session number from the environment (set by phyl-run)
+/// or fall back to the latest session in the DB.
+fn read_session_number(conn: &Connection) -> Result<u64, String> {
+    // phyl-run sets PHYLACTERY_SESSION_NUMBER at session start.
+    if let Ok(val) = std::env::var("PHYLACTERY_SESSION_NUMBER")
+        && let Ok(n) = val.parse::<u64>()
+    {
+        return Ok(n);
+    }
 
-    conn.execute(
-        "INSERT INTO sessions (session_id, began_at) VALUES (?1, ?2)",
-        rusqlite::params![session_id, now],
+    // Fallback: read the latest session number from the DB.
+    conn.query_row(
+        "SELECT COALESCE(MAX(session_number), 0) FROM sessions",
+        [],
+        |row| row.get(0),
     )
-    .map_err(|e| format!("failed to insert session: {e}"))?;
-
-    let session_number: u64 = conn
-        .query_row("SELECT last_insert_rowid()", [], |row| row.get(0))
-        .map_err(|e| format!("failed to get session number: {e}"))?;
-
-    Ok(session_number)
+    .map_err(|e| format!("failed to read session number: {e}"))
 }
 
 /// Apply exponential decay to all open/committed concerns not touched this session.
@@ -478,7 +482,15 @@ fn parse_dt(s: &str) -> chrono::DateTime<Utc> {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        return s;
+    }
+    // Find a char boundary at or before `max` to avoid splitting a multi-byte character.
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 // ---------------------------------------------------------------------------

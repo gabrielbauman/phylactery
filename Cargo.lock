@@ -1227,9 +1227,11 @@ dependencies = [
  "chrono",
  "libc",
  "phyl-core",
+ "rusqlite",
  "serde",
  "serde_json",
  "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -1313,12 +1315,9 @@ dependencies = [
 name = "phyl-tool-session"
 version = "0.1.0"
 dependencies = [
- "chrono",
  "phyl-core",
- "rusqlite",
  "serde",
  "serde_json",
- "uuid",
 ]
 
 [[package]]

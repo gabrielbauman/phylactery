@@ -17,6 +17,7 @@ pub fn open_and_migrate(path: &Path) -> Result<Connection> {
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    conn.execute_batch("PRAGMA busy_timeout=5000;")?;
     conn.execute_batch(SCHEMA)?;
     Ok(())
 }

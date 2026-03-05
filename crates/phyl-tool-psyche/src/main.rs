@@ -11,6 +11,7 @@
 //! - `kb_record` — Store a structured fact
 //! - `kb_retrieve` — Query structured facts
 //! - `kb_invalidate` — Mark a fact as invalid
+//! - `escalate` — Escalate to operator with structured metadata
 
 use chrono::Utc;
 use phyl_core::{ServerRequest, ServerResponse, ToolMode, ToolSpec};
@@ -338,6 +339,57 @@ fn tool_specs() -> Vec<ToolSpec> {
             }),
             sandbox: None,
         },
+        ToolSpec {
+            name: "escalate".to_string(),
+            description: "Escalate something to the human operator with structured metadata. \
+                Use for blocks, decisions needed, FYI notices, or capability requests. \
+                For 'blocked' and 'decision_required' kinds, the response includes a \
+                signal to notify the operator immediately. The escalation is recorded \
+                in the psyche database for tracking."
+                .to_string(),
+            mode: ToolMode::Server,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": "Short subject line for the escalation"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Full description of the escalation"
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high"],
+                        "description": "Urgency level (default: normal)"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["blocked", "decision_required", "fyi", "request_capability"],
+                        "description": "Type of escalation"
+                    },
+                    "concern_id": {
+                        "type": "string",
+                        "description": "Optional linked concern ID"
+                    },
+                    "commitment_id": {
+                        "type": "string",
+                        "description": "Optional linked commitment ID"
+                    },
+                    "blocking_action": {
+                        "type": "string",
+                        "description": "What action is blocked (for blocked kind)"
+                    },
+                    "proposed_resolution": {
+                        "type": "string",
+                        "description": "What you think should happen"
+                    }
+                },
+                "required": ["subject", "body", "kind"]
+            }),
+            sandbox: None,
+        },
     ]
 }
 
@@ -425,6 +477,7 @@ fn dispatch(conn: &Connection, req: &ServerRequest, session_number: u64) -> Serv
         "kb_record" => handle_kb_record(conn, req),
         "kb_retrieve" => handle_kb_retrieve(conn, req),
         "kb_invalidate" => handle_kb_invalidate(conn, req),
+        "escalate" => handle_escalate(conn, req),
         other => ServerResponse {
             id: req.id.clone(),
             output: None,
@@ -759,35 +812,64 @@ fn handle_surface_concerns(conn: &Connection, req: &ServerRequest) -> ServerResp
         })
         .unwrap_or_default();
 
-    // Build query dynamically.
-    let state_placeholders: Vec<String> = include_states.iter().map(|s| format!("'{s}'")).collect();
+    // Build parameterized query.
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut param_idx = 1_usize;
+
+    // State filter with parameterized placeholders.
+    let state_placeholders: Vec<String> = include_states
+        .iter()
+        .map(|s| {
+            let ph = format!("?{param_idx}");
+            param_idx += 1;
+            params.push(Box::new(s.clone()));
+            ph
+        })
+        .collect();
     let state_clause = format!("state IN ({})", state_placeholders.join(", "));
 
-    let mut conditions = vec![state_clause, format!("salience >= {min_salience}")];
+    // Salience filter.
+    let salience_ph = format!("?{param_idx}");
+    param_idx += 1;
+    params.push(Box::new(min_salience));
+    let mut conditions = vec![state_clause, format!("salience >= {salience_ph}")];
 
+    // Type filter.
     if let Some(t) = type_filter {
-        conditions.push(format!("type = '{t}'"));
+        let ph = format!("?{param_idx}");
+        param_idx += 1;
+        params.push(Box::new(t.to_string()));
+        conditions.push(format!("type = {ph}"));
     }
 
     // Tag filtering: check if any requested tag appears in the JSON array.
     for tag in &tag_filters {
-        conditions.push(format!("tags LIKE '%\"{}\"%'", tag.replace('\'', "''")));
+        let ph = format!("?{param_idx}");
+        param_idx += 1;
+        params.push(Box::new(format!("%\"{tag}\"%")));
+        conditions.push(format!("tags LIKE {ph}"));
     }
+
+    // Limit.
+    let limit_ph = format!("?{param_idx}");
+    params.push(Box::new(n as i64));
 
     let where_clause = conditions.join(" AND ");
     let query = format!(
         "SELECT concern_id, description, type, tension, state, salience, tags, origin, \
          touch_count, created_session, touched_session, created_at, touched_at, \
          resolved_at, abandoned_at, outcome, abandon_reason, spawned_from, spawned \
-         FROM concerns WHERE {where_clause} ORDER BY salience DESC LIMIT {n}"
+         FROM concerns WHERE {where_clause} ORDER BY salience DESC LIMIT {limit_ph}"
     );
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = match conn.prepare(&query) {
         Ok(s) => s,
         Err(e) => return error_response(&req.id, &format!("query error: {e}")),
     };
 
-    let concerns: Vec<serde_json::Value> = match stmt.query_map([], |row| {
+    let concerns: Vec<serde_json::Value> = match stmt.query_map(param_refs.as_slice(), |row| {
         Ok(serde_json::json!({
             "concern_id": row.get::<_, String>(0)?,
             "description": row.get::<_, String>(1)?,
@@ -1060,37 +1142,56 @@ fn handle_kb_retrieve(conn: &Connection, req: &ServerRequest) -> ServerResponse 
         .and_then(|v| v.as_u64())
         .unwrap_or(10) as usize;
 
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut param_idx = 1_usize;
+
+    // Confidence filter.
+    let conf_ph = format!("?{param_idx}");
+    param_idx += 1;
+    params.push(Box::new(min_confidence));
     let mut conditions = vec![
         "invalidated_at IS NULL".to_string(),
-        format!("confidence >= {min_confidence}"),
+        format!("confidence >= {conf_ph}"),
     ];
 
     if let Some(s) = subject {
-        conditions.push(format!("subject = '{}'", s.replace('\'', "''")));
+        let ph = format!("?{param_idx}");
+        param_idx += 1;
+        params.push(Box::new(s.to_string()));
+        conditions.push(format!("subject = {ph}"));
     }
     if let Some(p) = predicate {
-        conditions.push(format!("predicate = '{}'", p.replace('\'', "''")));
+        let ph = format!("?{param_idx}");
+        param_idx += 1;
+        params.push(Box::new(p.to_string()));
+        conditions.push(format!("predicate = {ph}"));
     }
 
     // Exclude expired records.
-    conditions.push(format!(
-        "(expires_at IS NULL OR expires_at > '{}')",
-        Utc::now().to_rfc3339()
-    ));
+    let now_ph = format!("?{param_idx}");
+    param_idx += 1;
+    params.push(Box::new(Utc::now().to_rfc3339()));
+    conditions.push(format!("(expires_at IS NULL OR expires_at > {now_ph})"));
+
+    // Limit.
+    let limit_ph = format!("?{param_idx}");
+    params.push(Box::new(limit as i64));
 
     let where_clause = conditions.join(" AND ");
     let query = format!(
         "SELECT record_id, subject, predicate, object, confidence, source, concern_id, \
          created_at, expires_at \
-         FROM kb_records WHERE {where_clause} ORDER BY confidence DESC LIMIT {limit}"
+         FROM kb_records WHERE {where_clause} ORDER BY confidence DESC LIMIT {limit_ph}"
     );
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = match conn.prepare(&query) {
         Ok(s) => s,
         Err(e) => return error_response(&req.id, &format!("query error: {e}")),
     };
 
-    let records: Vec<serde_json::Value> = match stmt.query_map([], |row| {
+    let records: Vec<serde_json::Value> = match stmt.query_map(param_refs.as_slice(), |row| {
         Ok(serde_json::json!({
             "record_id": row.get::<_, String>(0)?,
             "subject": row.get::<_, String>(1)?,
@@ -1159,6 +1260,98 @@ fn handle_kb_invalidate(conn: &Connection, req: &ServerRequest) -> ServerRespons
 }
 
 // ---------------------------------------------------------------------------
+// Escalation handler
+// ---------------------------------------------------------------------------
+
+fn handle_escalate(conn: &Connection, req: &ServerRequest) -> ServerResponse {
+    let subject = match req.arguments.get("subject").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return error_response(&req.id, "missing required parameter: subject"),
+    };
+    let body = match req.arguments.get("body").and_then(|v| v.as_str()) {
+        Some(b) => b,
+        None => return error_response(&req.id, "missing required parameter: body"),
+    };
+    let kind = match req.arguments.get("kind").and_then(|v| v.as_str()) {
+        Some(k) => k,
+        None => return error_response(&req.id, "missing required parameter: kind"),
+    };
+
+    if !matches!(
+        kind,
+        "blocked" | "decision_required" | "fyi" | "request_capability"
+    ) {
+        return error_response(
+            &req.id,
+            "kind must be 'blocked', 'decision_required', 'fyi', or 'request_capability'",
+        );
+    }
+
+    let urgency = req
+        .arguments
+        .get("urgency")
+        .and_then(|v| v.as_str())
+        .unwrap_or("normal");
+    let concern_id = req.arguments.get("concern_id").and_then(|v| v.as_str());
+    let commitment_id = req.arguments.get("commitment_id").and_then(|v| v.as_str());
+    let blocking_action = req
+        .arguments
+        .get("blocking_action")
+        .and_then(|v| v.as_str());
+    let proposed_resolution = req
+        .arguments
+        .get("proposed_resolution")
+        .and_then(|v| v.as_str());
+
+    let escalation_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    if let Err(e) = conn.execute(
+        "INSERT INTO escalations (escalation_id, subject, body, urgency, kind, \
+         concern_id, commitment_id, blocking_action, proposed_resolution, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            escalation_id,
+            subject,
+            body,
+            urgency,
+            kind,
+            concern_id,
+            commitment_id,
+            blocking_action,
+            proposed_resolution,
+            now,
+        ],
+    ) {
+        return error_response(&req.id, &format!("database error: {e}"));
+    }
+
+    let needs_notify = kind == "blocked" || kind == "decision_required";
+
+    let output = serde_json::json!({
+        "escalation_id": escalation_id,
+        "subject": subject,
+        "kind": kind,
+        "urgency": urgency,
+        "notify_operator": needs_notify,
+    });
+
+    // For blocking escalations, emit a signal so phyl-run can trigger ask_human.
+    let signal = if needs_notify {
+        Some(format!("escalation:{escalation_id}"))
+    } else {
+        None
+    };
+
+    ServerResponse {
+        id: req.id.clone(),
+        output: Some(serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())),
+        error: None,
+        signal,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Response helpers
 // ---------------------------------------------------------------------------
 
@@ -1198,7 +1391,7 @@ mod tests {
     #[test]
     fn test_tool_specs() {
         let specs = tool_specs();
-        assert_eq!(specs.len(), 10);
+        assert_eq!(specs.len(), 11);
         let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"open_concern"));
         assert!(names.contains(&"touch_concern"));
@@ -1210,6 +1403,7 @@ mod tests {
         assert!(names.contains(&"kb_record"));
         assert!(names.contains(&"kb_retrieve"));
         assert!(names.contains(&"kb_invalidate"));
+        assert!(names.contains(&"escalate"));
         for spec in &specs {
             assert_eq!(spec.mode, ToolMode::Server);
         }
@@ -1220,7 +1414,7 @@ mod tests {
         let specs = tool_specs();
         let json = serde_json::to_string_pretty(&specs).unwrap();
         let parsed: Vec<ToolSpec> = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.len(), 10);
+        assert_eq!(parsed.len(), 11);
     }
 
     fn test_db() -> Connection {
@@ -1602,5 +1796,102 @@ mod tests {
             .unwrap();
         let spawned_arr: Vec<String> = serde_json::from_str(&spawned).unwrap();
         assert_eq!(spawned_arr.len(), 1);
+    }
+
+    // --- Escalate tests ---
+
+    #[test]
+    fn test_escalate_missing_params() {
+        let conn = test_db();
+        let req = make_request("1", "escalate", serde_json::json!({}));
+        let resp = dispatch(&conn, &req, 1);
+        assert!(resp.error.is_some());
+        assert!(resp.error.unwrap().contains("subject"));
+    }
+
+    #[test]
+    fn test_escalate_invalid_kind() {
+        let conn = test_db();
+        let req = make_request(
+            "1",
+            "escalate",
+            serde_json::json!({
+                "subject": "test",
+                "body": "test body",
+                "kind": "invalid"
+            }),
+        );
+        let resp = dispatch(&conn, &req, 1);
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_escalate_fyi() {
+        let conn = test_db();
+        let req = make_request(
+            "1",
+            "escalate",
+            serde_json::json!({
+                "subject": "Status update",
+                "body": "Everything is going well",
+                "kind": "fyi"
+            }),
+        );
+        let resp = dispatch(&conn, &req, 1);
+        assert!(resp.error.is_none());
+        assert!(resp.signal.is_none()); // FYI doesn't trigger notification
+        let output: serde_json::Value =
+            serde_json::from_str(resp.output.as_ref().unwrap()).unwrap();
+        assert!(output.get("escalation_id").is_some());
+        assert_eq!(output["kind"], "fyi");
+        assert_eq!(output["notify_operator"], false);
+    }
+
+    #[test]
+    fn test_escalate_blocked_emits_signal() {
+        let conn = test_db();
+        let req = make_request(
+            "1",
+            "escalate",
+            serde_json::json!({
+                "subject": "Can't deploy",
+                "body": "Need access to production cluster",
+                "kind": "blocked",
+                "urgency": "high"
+            }),
+        );
+        let resp = dispatch(&conn, &req, 1);
+        assert!(resp.error.is_none());
+        assert!(resp.signal.is_some()); // Blocked triggers escalation signal
+        assert!(resp.signal.unwrap().starts_with("escalation:"));
+        let output: serde_json::Value =
+            serde_json::from_str(resp.output.as_ref().unwrap()).unwrap();
+        assert_eq!(output["notify_operator"], true);
+        assert_eq!(output["urgency"], "high");
+    }
+
+    #[test]
+    fn test_escalate_persists_to_db() {
+        let conn = test_db();
+        let req = make_request(
+            "1",
+            "escalate",
+            serde_json::json!({
+                "subject": "Need input",
+                "body": "Which approach?",
+                "kind": "decision_required"
+            }),
+        );
+        let resp = dispatch(&conn, &req, 1);
+        assert!(resp.error.is_none());
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM escalations",
+                [],
+                |r: &rusqlite::Row| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

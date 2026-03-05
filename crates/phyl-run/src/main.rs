@@ -153,6 +153,23 @@ fn run_session(args: &Args) -> Result<(), String> {
     // Step 4b: Read briefing.json if it exists.
     let briefing_section = read_briefing(&home);
 
+    let session_dir_abs =
+        fs::canonicalize(&args.session_dir).unwrap_or_else(|_| args.session_dir.clone());
+
+    // Register this session in psyche.db BEFORE spawning tools, so the session
+    // number is available in the environment when child processes start.
+    let session_number = register_session(&home, &session_id);
+
+    // Set environment variables for tools.
+    // SAFETY: phyl-run is single-threaded at this point (before spawning any child processes).
+    unsafe {
+        std::env::set_var("PHYLACTERY_SESSION_ID", &session_id);
+        std::env::set_var("PHYLACTERY_SESSION_DIR", &session_dir_abs);
+        std::env::set_var("PHYLACTERY_HOME", &home);
+        std::env::set_var("PHYLACTERY_KNOWLEDGE_DIR", home.join("knowledge"));
+        std::env::set_var("PHYLACTERY_SESSION_NUMBER", session_number.to_string());
+    }
+
     // Step 6: Discover tools from $PATH.
     let discovered = discover_tools();
     eprintln!(
@@ -178,7 +195,7 @@ fn run_session(args: &Args) -> Result<(), String> {
         &tool_names,
     );
 
-    // Step 7: Start server-mode tools.
+    // Step 7: Start server-mode tools (they inherit env vars set above).
     let mut server_tools = start_server_tools(&discovered)?;
     eprintln!(
         "phyl-run: started {} server-mode tool process(es)",
@@ -245,19 +262,6 @@ fn run_session(args: &Args) -> Result<(), String> {
     let session_start = Instant::now();
     let session_timeout = Duration::from_secs(config.session.timeout_minutes * 60);
     let model_binary = &config.session.model;
-    let session_dir_abs =
-        fs::canonicalize(&args.session_dir).unwrap_or_else(|_| args.session_dir.clone());
-
-    // Set environment variables for tools.
-    // SAFETY: phyl-run is single-threaded at this point (before spawning tool threads).
-    let session_number = read_session_number(&home);
-    unsafe {
-        std::env::set_var("PHYLACTERY_SESSION_ID", &session_id);
-        std::env::set_var("PHYLACTERY_SESSION_DIR", &session_dir_abs);
-        std::env::set_var("PHYLACTERY_HOME", &home);
-        std::env::set_var("PHYLACTERY_KNOWLEDGE_DIR", home.join("knowledge"));
-        std::env::set_var("PHYLACTERY_SESSION_NUMBER", session_number.to_string());
-    }
 
     // Step 10: The agentic loop.
     let mut end_session = false;
@@ -427,6 +431,9 @@ fn run_session(args: &Args) -> Result<(), String> {
     // Finalization — SOUL.md reflection.
     finalize_soul(&home, model_binary, &history, &session_id)?;
 
+    // Step 11b: Check obligations (after tools closed, before subconscious pass).
+    check_obligations(&home);
+
     // Step 11c: Run subconscious pass (decay, briefing generation).
     run_subconscious_pass();
 
@@ -590,15 +597,41 @@ fn format_briefing(briefing: &phyl_core::Briefing) -> String {
     parts.join("\n")
 }
 
-/// Read the current session number from briefing.json (or default to 0).
-fn read_session_number(home: &Path) -> u64 {
-    let briefing_path = home.join("briefing.json");
-    let text = match fs::read_to_string(&briefing_path) {
-        Ok(t) => t,
-        Err(_) => return 0,
+/// Register this session in psyche.db at session START and return the session number.
+///
+/// This ensures tools and the subconscious pass share the same session number.
+/// If psyche.db doesn't exist yet, returns 0 (first session).
+fn register_session(home: &Path, session_id: &str) -> u64 {
+    let db_path = home.join("psyche.db");
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("phyl-run: failed to open psyche.db for session registration: {e}");
+            return 0;
+        }
     };
-    serde_json::from_str::<phyl_core::Briefing>(&text)
-        .map(|b| b.session_number)
+
+    let _ = conn.execute_batch("PRAGMA busy_timeout=5000;");
+
+    // Ensure sessions table exists (it might be a fresh DB).
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sessions (\
+         session_number INTEGER PRIMARY KEY AUTOINCREMENT, \
+         session_id TEXT NOT NULL, \
+         began_at TEXT NOT NULL, \
+         closed_at TEXT)",
+    );
+
+    let now = Utc::now().to_rfc3339();
+    if let Err(e) = conn.execute(
+        "INSERT INTO sessions (session_id, began_at) VALUES (?1, ?2)",
+        rusqlite::params![session_id, now],
+    ) {
+        eprintln!("phyl-run: failed to register session: {e}");
+        return 0;
+    }
+
+    conn.query_row("SELECT last_insert_rowid()", [], |row| row.get(0))
         .unwrap_or(0)
 }
 
@@ -622,6 +655,53 @@ fn run_subconscious_pass() {
             // Not fatal — psyche-sub might not be installed yet.
             eprintln!("phyl-run: failed to run phyl-psyche-sub: {e}");
         }
+    }
+}
+
+/// Check for unreported commitments and undispositioned flagged concerns.
+///
+/// Logs warnings to stderr — the agent should have handled these during
+/// the session. These warnings also appear in the next briefing.
+fn check_obligations(home: &Path) {
+    let db_path = home.join("psyche.db");
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let _ = conn.execute_batch("PRAGMA busy_timeout=5000;");
+
+    // Check for pending commitments that are past due.
+    let now = Utc::now().to_rfc3339();
+    if let Ok(overdue) = conn.query_row(
+        "SELECT COUNT(*) FROM commitments WHERE state = 'pending' AND scheduled_for <= ?1",
+        [&now],
+        |row| row.get::<_, i64>(0),
+    ) && overdue > 0
+    {
+        eprintln!("phyl-run: WARNING: {overdue} overdue commitment(s) not reported this session");
+    }
+
+    // Check for flagged-for-abandonment concerns not dispositioned.
+    if let Ok(flagged) = conn.query_row(
+        "SELECT COUNT(*) FROM concerns WHERE state IN ('open', 'committed') \
+         AND tags LIKE '%\"flagged_for_abandonment\"%'",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) && flagged > 0
+    {
+        eprintln!(
+            "phyl-run: WARNING: {flagged} concern(s) flagged for abandonment still undispositioned"
+        );
+    }
+
+    // Check for broken commitments (these persist until addressed).
+    if let Ok(broken) = conn.query_row(
+        "SELECT COUNT(*) FROM commitments WHERE state = 'broken'",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) && broken > 0
+    {
+        eprintln!("phyl-run: WARNING: {broken} broken commitment(s) on record");
     }
 }
 
@@ -730,13 +810,43 @@ fn build_system_prompt(
         format!("\n\n=== BRIEFING ===\n{briefing}")
     };
 
+    // Include psyche orientation if psyche tools are available.
+    let has_psyche = tool_names.iter().any(|n| n == "open_concern");
+    let psyche_section = if has_psyche {
+        "\n\n=== PSYCHE (internal state management) ===\n\
+         You have a structured internal state system. Use it.\n\n\
+         CONCERNS are things with genuine pull — questions you keep returning to (epistemic), \
+         things you want (appetitive), things you intend to change (conative). Only open a \
+         concern if the gap would change your behavior if it closed. Conative concerns require \
+         a tension: what specifically is wrong or incomplete about now.\n\n\
+         COMMITMENTS are concrete promises tied to conative concerns. When you commit, you \
+         declare an action and a deadline. Report every commitment as fulfilled or broken — \
+         broken commitments persist in every briefing until addressed. Do not let commitments \
+         lapse silently.\n\n\
+         SALIENCE decays between sessions. Touch concerns you actively work on to keep them \
+         alive. Concerns that decay below threshold are flagged for abandonment — you must \
+         explicitly resolve or abandon them, not ignore them.\n\n\
+         OBLIGATIONS at session end:\n\
+         - Broken commitments must be acknowledged\n\
+         - Flagged-for-abandonment concerns must be dispositioned (resolve, abandon, or touch to revive)\n\
+         - Overdue commitments should be reported\n\n\
+         ESCALATE when blocked or needing a decision. For FYI or capability requests, \
+         the escalation is recorded. For blocked/decision_required, the operator is notified immediately.\n\n\
+         KB (knowledge base) stores structured facts with confidence scores and optional expiry. \
+         Use it to persist verified information across sessions.\n\n\
+         The BRIEFING section above shows your current state. Read it at session start."
+            .to_string()
+    } else {
+        String::new()
+    };
+
     format!(
         "=== LAW ===\n\
          {law}\n\n\
          === JOB ===\n\
          {job}\n\n\
          === SOUL ===\n\
-         {soul}{briefing_section}\n\n\
+         {soul}{briefing_section}{psyche_section}\n\n\
          {knowledge_section}\n\n\
          === SESSION ===\n\
          Session ID: {session_id}\n\
