@@ -1208,6 +1208,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyl-psyche-sub"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "phyl-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "phyl-run"
 version = "0.1.0"
 dependencies = [

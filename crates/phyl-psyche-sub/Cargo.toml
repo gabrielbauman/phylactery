@@ -1,0 +1,18 @@
+[package]
+name = "phyl-psyche-sub"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "phyl-psyche-sub"
+path = "src/main.rs"
+
+[dependencies]
+phyl-core = { path = "../phyl-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+rusqlite = { workspace = true }
+toml = { workspace = true }
