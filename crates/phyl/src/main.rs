@@ -102,6 +102,13 @@ fn try_main() -> anyhow::Result<()> {
         "watch" => {
             run_async(cmd_watch::run())?;
         }
+        "ui" => {
+            // Exec phyl-tui (replace current process).
+            let binary =
+                cmd_start::find_binary("phyl-tui").unwrap_or_else(|| "phyl-tui".to_string());
+            let err = exec_replace(&binary);
+            bail!("failed to exec phyl-tui: {err}");
+        }
         "config" => {
             let sub_args: Vec<String> = args[2..].to_vec();
             cmd_config::run(&sub_args).context("config failed")?;
@@ -139,6 +146,7 @@ fn usage() {
     eprintln!("  log <id>                   Tail session log");
     eprintln!("  stop <id>                  Kill session");
     eprintln!("  watch                      Live feed of all sessions, answer questions");
+    eprintln!("  ui                         Interactive terminal UI");
     eprintln!();
     eprintln!("Daemon and services:");
     eprintln!("  start [-d]                Start daemon (foreground, or -d for background)");
@@ -158,4 +166,12 @@ fn usage() {
     eprintln!("  config add-secret K V     Add a secret to secrets.env");
     eprintln!("  config list-secrets       List secret keys (values masked)");
     eprintln!("  config remove-secret K    Remove a secret");
+}
+
+/// Replace the current process with the given binary (Unix exec).
+fn exec_replace(binary: &str) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    // This only returns if exec fails.
+    Command::new(binary).exec()
 }
