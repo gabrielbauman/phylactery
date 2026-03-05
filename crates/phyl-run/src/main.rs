@@ -150,6 +150,9 @@ fn run_session(args: &Args) -> Result<(), String> {
     let index = read_file_or_default(&home.join("knowledge/INDEX.md"), "");
     let knowledge_summary = generate_knowledge_summary(&home.join("knowledge"));
 
+    // Step 4b: Read briefing.json if it exists.
+    let briefing_section = read_briefing(&home);
+
     // Step 6: Discover tools from $PATH.
     let discovered = discover_tools();
     eprintln!(
@@ -167,6 +170,7 @@ fn run_session(args: &Args) -> Result<(), String> {
         &law,
         &job,
         &soul,
+        &briefing_section,
         &index,
         &knowledge_summary,
         &session_id,
@@ -246,11 +250,13 @@ fn run_session(args: &Args) -> Result<(), String> {
 
     // Set environment variables for tools.
     // SAFETY: phyl-run is single-threaded at this point (before spawning tool threads).
+    let session_number = read_session_number(&home);
     unsafe {
         std::env::set_var("PHYLACTERY_SESSION_ID", &session_id);
         std::env::set_var("PHYLACTERY_SESSION_DIR", &session_dir_abs);
         std::env::set_var("PHYLACTERY_HOME", &home);
         std::env::set_var("PHYLACTERY_KNOWLEDGE_DIR", home.join("knowledge"));
+        std::env::set_var("PHYLACTERY_SESSION_NUMBER", session_number.to_string());
     }
 
     // Step 10: The agentic loop.
@@ -421,6 +427,9 @@ fn run_session(args: &Args) -> Result<(), String> {
     // Finalization — SOUL.md reflection.
     finalize_soul(&home, model_binary, &history, &session_id)?;
 
+    // Step 11c: Run subconscious pass (decay, briefing generation).
+    run_subconscious_pass();
+
     // Step 12: Write final done entry.
     let summary = final_summary.as_deref().unwrap_or("Session complete");
     write_log(
@@ -468,6 +477,152 @@ fn read_config(home: &Path) -> Result<Config, String> {
 
 fn read_file_or_default(path: &Path, default: &str) -> String {
     fs::read_to_string(path).unwrap_or_else(|_| default.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Briefing / psyche integration
+// ---------------------------------------------------------------------------
+
+/// Read briefing.json and format it for inclusion in the system prompt.
+fn read_briefing(home: &Path) -> String {
+    let briefing_path = home.join("briefing.json");
+    let text = match fs::read_to_string(&briefing_path) {
+        Ok(t) => t,
+        Err(_) => return String::new(),
+    };
+
+    let briefing: phyl_core::Briefing = match serde_json::from_str(&text) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("phyl-run: failed to parse briefing.json: {e}");
+            return String::new();
+        }
+    };
+
+    format_briefing(&briefing)
+}
+
+/// Format a Briefing struct into a human-readable section for the system prompt.
+fn format_briefing(briefing: &phyl_core::Briefing) -> String {
+    let mut parts = Vec::new();
+
+    parts.push(format!(
+        "Session #{} | Generated: {}",
+        briefing.session_number,
+        briefing.generated_at.format("%Y-%m-%d %H:%M UTC"),
+    ));
+
+    if !briefing.top_concerns.is_empty() {
+        parts.push(String::new());
+        parts.push("Top concerns:".to_string());
+        for c in &briefing.top_concerns {
+            let tension = c
+                .tension
+                .as_deref()
+                .map(|t| format!(" [{t}]"))
+                .unwrap_or_default();
+            parts.push(format!(
+                "  - [{:.2}] ({:?}/{:?}) {}{} [touches: {}, tags: {}]",
+                c.salience,
+                c.concern_type,
+                c.state,
+                c.description,
+                tension,
+                c.touch_count,
+                c.tags.join(", "),
+            ));
+        }
+    }
+
+    if !briefing.pending_commitments.is_empty() {
+        parts.push(String::new());
+        parts.push("Pending commitments:".to_string());
+        for c in &briefing.pending_commitments {
+            parts.push(format!(
+                "  - [due {}] {} (concern: {})",
+                c.scheduled_for.format("%Y-%m-%d %H:%M UTC"),
+                c.action,
+                c.concern_id,
+            ));
+        }
+    }
+
+    if !briefing.broken_commitments.is_empty() {
+        parts.push(String::new());
+        parts.push("BROKEN COMMITMENTS (must address):".to_string());
+        for c in &briefing.broken_commitments {
+            let note = c.note.as_deref().unwrap_or("no note");
+            parts.push(format!("  - {} — {note}", c.action));
+        }
+    }
+
+    if !briefing.flagged_for_abandonment.is_empty() {
+        parts.push(String::new());
+        parts
+            .push("Flagged for abandonment (salience decayed — disposition required):".to_string());
+        for c in &briefing.flagged_for_abandonment {
+            parts.push(format!(
+                "  - [{:.4}] {} (id: {})",
+                c.salience, c.description, c.concern_id,
+            ));
+        }
+    }
+
+    if !briefing.suggested_tensions.is_empty() {
+        parts.push(String::new());
+        parts.push("Suggested tensions:".to_string());
+        for t in &briefing.suggested_tensions {
+            parts.push(format!("  - {t}"));
+        }
+    }
+
+    if !briefing.open_escalations.is_empty() {
+        parts.push(String::new());
+        parts.push("Open escalations:".to_string());
+        for e in &briefing.open_escalations {
+            parts.push(format!(
+                "  - [{:?}/{:?}] {}: {}",
+                e.urgency, e.kind, e.subject, e.body,
+            ));
+        }
+    }
+
+    parts.join("\n")
+}
+
+/// Read the current session number from briefing.json (or default to 0).
+fn read_session_number(home: &Path) -> u64 {
+    let briefing_path = home.join("briefing.json");
+    let text = match fs::read_to_string(&briefing_path) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    serde_json::from_str::<phyl_core::Briefing>(&text)
+        .map(|b| b.session_number)
+        .unwrap_or(0)
+}
+
+/// Invoke `phyl-psyche-sub` to run the subconscious pass (decay + briefing).
+fn run_subconscious_pass() {
+    eprintln!("phyl-run: running subconscious pass");
+    match std::process::Command::new("phyl-psyche-sub")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+    {
+        Ok(status) => {
+            if status.success() {
+                eprintln!("phyl-run: subconscious pass complete");
+            } else {
+                eprintln!("phyl-run: subconscious pass exited with status {status}");
+            }
+        }
+        Err(e) => {
+            // Not fatal — psyche-sub might not be installed yet.
+            eprintln!("phyl-run: failed to run phyl-psyche-sub: {e}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +701,7 @@ fn build_system_prompt(
     law: &str,
     job: &str,
     soul: &str,
+    briefing: &str,
     index: &str,
     knowledge_summary: &str,
     session_id: &str,
@@ -568,13 +724,19 @@ fn build_system_prompt(
         )
     };
 
+    let briefing_section = if briefing.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n=== BRIEFING ===\n{briefing}")
+    };
+
     format!(
         "=== LAW ===\n\
          {law}\n\n\
          === JOB ===\n\
          {job}\n\n\
          === SOUL ===\n\
-         {soul}\n\n\
+         {soul}{briefing_section}\n\n\
          {knowledge_section}\n\n\
          === SESSION ===\n\
          Session ID: {session_id}\n\
@@ -1643,6 +1805,7 @@ mod tests {
             "Do no harm.",
             "You are a helper.",
             "I am new.",
+            "",
             "No entries yet.",
             "",
             "test-123",
@@ -1661,6 +1824,25 @@ mod tests {
         assert!(prompt.contains("bash, read_file"));
         assert!(prompt.contains("Prefer dedicated tools over bash"));
         assert!(prompt.contains("LAW rules are absolute"));
+        // No briefing section when empty.
+        assert!(!prompt.contains("=== BRIEFING ==="));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_briefing() {
+        let prompt = build_system_prompt(
+            "law",
+            "job",
+            "soul",
+            "Session #5 | Top concerns:\n  - [0.80] Fix deploy",
+            "index",
+            "",
+            "s1",
+            Path::new("/tmp/s1"),
+            &["bash".to_string()],
+        );
+        assert!(prompt.contains("=== BRIEFING ==="));
+        assert!(prompt.contains("Fix deploy"));
     }
 
     #[test]
@@ -1669,6 +1851,7 @@ mod tests {
             "law",
             "job",
             "soul",
+            "",
             "index",
             "",
             "s1",
@@ -1684,6 +1867,7 @@ mod tests {
             "law",
             "job",
             "soul",
+            "",
             "index",
             "Files in knowledge/ (use read_file to access):\n  contacts/alice.md\n  projects/rust.md\n",
             "s1",
@@ -1701,6 +1885,7 @@ mod tests {
             "law",
             "job",
             "soul",
+            "",
             "index",
             "",
             "s1",

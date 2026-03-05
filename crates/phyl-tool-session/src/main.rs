@@ -1,6 +1,9 @@
+use chrono::Utc;
 use phyl_core::{ServerRequest, ServerResponse, ToolMode, ToolSpec};
+use rusqlite::Connection;
 use serde::Deserialize;
 use std::io::{self, BufRead, Write};
+use uuid::Uuid;
 
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
@@ -30,6 +33,57 @@ fn tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["question"]
+            }),
+            sandbox: None,
+        },
+        ToolSpec {
+            name: "escalate".to_string(),
+            description: "Escalate something to the human operator with structured metadata. \
+                         Use for blocks, decisions needed, FYI notices, or capability requests. \
+                         For 'blocked' and 'decision_required' kinds, the operator will be \
+                         notified immediately via ask_human. The escalation is recorded in the \
+                         psyche database for tracking."
+                .to_string(),
+            mode: ToolMode::Server,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": "Short subject line for the escalation"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Full description of the escalation"
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high"],
+                        "description": "Urgency level (default: normal)"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["blocked", "decision_required", "fyi", "request_capability"],
+                        "description": "Type of escalation"
+                    },
+                    "concern_id": {
+                        "type": "string",
+                        "description": "Optional linked concern ID"
+                    },
+                    "commitment_id": {
+                        "type": "string",
+                        "description": "Optional linked commitment ID"
+                    },
+                    "blocking_action": {
+                        "type": "string",
+                        "description": "What action is blocked (for blocked kind)"
+                    },
+                    "proposed_resolution": {
+                        "type": "string",
+                        "description": "What you think should happen"
+                    }
+                },
+                "required": ["subject", "body", "kind"]
             }),
             sandbox: None,
         },
@@ -266,6 +320,10 @@ fn serve() {
                         }
                     }
                 }
+                "escalate" => {
+                    let response = handle_escalate(&req);
+                    write_response(&mut writer, &response);
+                }
                 other => {
                     let response = ServerResponse {
                         id: req.id,
@@ -287,6 +345,133 @@ fn serve() {
     eprintln!("phyl-tool-session: stdin closed, exiting");
 }
 
+/// Handle the `escalate` tool — write escalation to psyche.db and return ID.
+fn handle_escalate(req: &ServerRequest) -> ServerResponse {
+    let subject = match req.arguments.get("subject").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            return ServerResponse {
+                id: req.id.clone(),
+                output: None,
+                error: Some("missing required parameter: subject".to_string()),
+                signal: None,
+            };
+        }
+    };
+
+    let body = match req.arguments.get("body").and_then(|v| v.as_str()) {
+        Some(b) => b,
+        None => {
+            return ServerResponse {
+                id: req.id.clone(),
+                output: None,
+                error: Some("missing required parameter: body".to_string()),
+                signal: None,
+            };
+        }
+    };
+
+    let kind = match req.arguments.get("kind").and_then(|v| v.as_str()) {
+        Some(k) => k,
+        None => {
+            return ServerResponse {
+                id: req.id.clone(),
+                output: None,
+                error: Some("missing required parameter: kind".to_string()),
+                signal: None,
+            };
+        }
+    };
+
+    if !matches!(
+        kind,
+        "blocked" | "decision_required" | "fyi" | "request_capability"
+    ) {
+        return ServerResponse {
+            id: req.id.clone(),
+            output: None,
+            error: Some(
+                "kind must be 'blocked', 'decision_required', 'fyi', or 'request_capability'"
+                    .to_string(),
+            ),
+            signal: None,
+        };
+    }
+
+    let urgency = req
+        .arguments
+        .get("urgency")
+        .and_then(|v| v.as_str())
+        .unwrap_or("normal");
+    let concern_id = req.arguments.get("concern_id").and_then(|v| v.as_str());
+    let commitment_id = req.arguments.get("commitment_id").and_then(|v| v.as_str());
+    let blocking_action = req
+        .arguments
+        .get("blocking_action")
+        .and_then(|v| v.as_str());
+    let proposed_resolution = req
+        .arguments
+        .get("proposed_resolution")
+        .and_then(|v| v.as_str());
+
+    let escalation_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+
+    // Write to psyche.db if available.
+    if let Some(db_path) = psyche_db_path() {
+        match Connection::open(&db_path) {
+            Ok(conn) => {
+                let result = conn.execute(
+                    "INSERT INTO escalations (escalation_id, subject, body, urgency, kind, \
+                     concern_id, commitment_id, blocking_action, proposed_resolution, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        escalation_id,
+                        subject,
+                        body,
+                        urgency,
+                        kind,
+                        concern_id,
+                        commitment_id,
+                        blocking_action,
+                        proposed_resolution,
+                        now,
+                    ],
+                );
+                if let Err(e) = result {
+                    eprintln!("phyl-tool-session: failed to write escalation to DB: {e}");
+                }
+            }
+            Err(e) => {
+                eprintln!("phyl-tool-session: failed to open psyche.db: {e}");
+            }
+        }
+    }
+
+    let output = serde_json::json!({
+        "escalation_id": escalation_id,
+        "subject": subject,
+        "kind": kind,
+        "urgency": urgency,
+        "notify_operator": kind == "blocked" || kind == "decision_required",
+    });
+
+    ServerResponse {
+        id: req.id.clone(),
+        output: Some(serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string())),
+        error: None,
+        signal: None,
+    }
+}
+
+/// Get the path to psyche.db if PHYLACTERY_HOME is set.
+fn psyche_db_path() -> Option<std::path::PathBuf> {
+    std::env::var("PHYLACTERY_HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join("psyche.db"))
+        .filter(|p| p.exists())
+}
+
 fn write_response(writer: &mut impl Write, response: &ServerResponse) {
     let mut json = serde_json::to_string(response).expect("failed to serialize response");
     json.push('\n');
@@ -305,12 +490,13 @@ mod tests {
     #[test]
     fn test_tool_specs() {
         let specs = tool_specs();
-        assert_eq!(specs.len(), 2);
+        assert_eq!(specs.len(), 3);
         assert_eq!(specs[0].name, "ask_human");
         assert_eq!(specs[0].mode, ToolMode::Server);
-        assert_eq!(specs[1].name, "done");
+        assert_eq!(specs[1].name, "escalate");
         assert_eq!(specs[1].mode, ToolMode::Server);
-        assert!(specs[1].sandbox.is_none());
+        assert_eq!(specs[2].name, "done");
+        assert_eq!(specs[2].mode, ToolMode::Server);
     }
 
     #[test]
@@ -318,11 +504,79 @@ mod tests {
         let specs = tool_specs();
         let json = serde_json::to_string_pretty(&specs).unwrap();
         assert!(json.contains("ask_human"));
+        assert!(json.contains("escalate"));
         assert!(json.contains("done"));
         assert!(json.contains("End the current session"));
 
         // Verify it round-trips.
         let parsed: Vec<ToolSpec> = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.len(), 3);
+    }
+
+    #[test]
+    fn test_escalate_missing_params() {
+        let req = ServerRequest {
+            id: "1".to_string(),
+            name: "escalate".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let resp = handle_escalate(&req);
+        assert!(resp.error.is_some());
+        assert!(resp.error.unwrap().contains("subject"));
+    }
+
+    #[test]
+    fn test_escalate_invalid_kind() {
+        let req = ServerRequest {
+            id: "1".to_string(),
+            name: "escalate".to_string(),
+            arguments: serde_json::json!({
+                "subject": "test",
+                "body": "test body",
+                "kind": "invalid"
+            }),
+        };
+        let resp = handle_escalate(&req);
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_escalate_valid_fyi() {
+        let req = ServerRequest {
+            id: "1".to_string(),
+            name: "escalate".to_string(),
+            arguments: serde_json::json!({
+                "subject": "Status update",
+                "body": "Everything is going well",
+                "kind": "fyi"
+            }),
+        };
+        let resp = handle_escalate(&req);
+        assert!(resp.error.is_none());
+        let output: serde_json::Value =
+            serde_json::from_str(resp.output.as_ref().unwrap()).unwrap();
+        assert!(output.get("escalation_id").is_some());
+        assert_eq!(output["kind"], "fyi");
+        assert_eq!(output["notify_operator"], false);
+    }
+
+    #[test]
+    fn test_escalate_blocked_notifies() {
+        let req = ServerRequest {
+            id: "1".to_string(),
+            name: "escalate".to_string(),
+            arguments: serde_json::json!({
+                "subject": "Can't deploy",
+                "body": "Need access to production cluster",
+                "kind": "blocked",
+                "urgency": "high"
+            }),
+        };
+        let resp = handle_escalate(&req);
+        assert!(resp.error.is_none());
+        let output: serde_json::Value =
+            serde_json::from_str(resp.output.as_ref().unwrap()).unwrap();
+        assert_eq!(output["notify_operator"], true);
+        assert_eq!(output["urgency"], "high");
     }
 }
