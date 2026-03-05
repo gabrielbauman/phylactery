@@ -20,7 +20,9 @@ BINARIES=(
     phyl-poll
     phyl-listen
     phyl-tool-self
+    phyl-tool-psyche
     phyl-sched
+    phyl-psyche-sub
 )
 
 INSTALL_DIR="${HOME}/.local/bin"
